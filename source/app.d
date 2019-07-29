@@ -50,7 +50,6 @@ void test02(ref string[] v)
 
 void test03()
 {
-
     import std.algorithm;
     import std.range;
 
