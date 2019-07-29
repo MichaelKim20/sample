@@ -21,5 +21,28 @@ public alias Hash = BitBlob!256;
 
 private int main (string[] args)
 {
+    test01();
     return 0;
+}
+
+void test01()
+{
+    string[]  values;
+
+    values ~= "1";
+    values ~= "2";
+    values ~= "3";
+    values ~= "4";
+    test02(values);
+    writeln(values);
+}
+
+void test02(ref string[] v)
+{
+    string[]  values = v;
+
+    v ~= "5";
+    values ~= "6";
+    values ~= "7";
+    values ~= "8";
 }
