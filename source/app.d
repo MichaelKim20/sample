@@ -23,5 +23,6 @@ private int main (string[] args)
 {
     writeln("b1");
     writeln("b2");
+    writeln("b3");
     return 0;
 }
