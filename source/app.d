@@ -23,6 +23,7 @@ private int main (string[] args)
 {
     test01();
     test03();
+    test05();
     return 0;
 }
 
@@ -126,4 +127,9 @@ void test04()
     .each!((idx, val) => values[idx] = val);
 
     writeln(values);
+}
+
+void test05()
+{
+    writeln("test05");
 }
