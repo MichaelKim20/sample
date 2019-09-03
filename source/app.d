@@ -24,6 +24,7 @@ private int main (string[] args)
     test01();
     test03();
     test05();
+    test051();
     return 0;
 }
 
@@ -132,4 +133,9 @@ void test04()
 void test05()
 {
     writeln("test05");
+}
+
+void test051()
+{
+    writeln("test051");
 }
