@@ -12,3 +12,4 @@ source-test-*
 *.o
 *.obj
 *.lst
+build/
