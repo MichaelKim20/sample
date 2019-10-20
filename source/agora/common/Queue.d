@@ -138,6 +138,8 @@ public class BlockingQueue (T) : Queue!T
 /*******************************************************************************
 
     Non-blocking multi-producer multi-consumer queue
+    Implementations based on the paper "Simple, fast, and practical non-blocking 
+    and blocking concurrent queue algorithms"
 
 *******************************************************************************/
 
