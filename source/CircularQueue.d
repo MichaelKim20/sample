@@ -2,7 +2,8 @@ module CircularQueue;
 
 /*******************************************************************************
 
-    Non-blocking multi-producer multi-QueueItemumer queue
+    Multi-producer multi-conumer queue
+    Non-blocking and blocking concurrent queue algorithms
 
     Copyright:
         Copyright (c) 2019 BOS Platform Foundation Korea
@@ -13,165 +14,366 @@ module CircularQueue;
 
 *******************************************************************************/
 import core.atomic;
+import core.sync.mutex;
 
-private static class QueueItem(T)
+/*******************************************************************************
+
+    Interface for all queues.
+
+*******************************************************************************/
+
+public interface Queue (T)
 {
-    public QueueItem!T next;
+    /***************************************************************************
+
+        Atomically put one element into the queue.
+
+        Params:
+            value = value to add
+
+    ***************************************************************************/
+
+    public void enqueue (T value);
+
+    /***************************************************************************
+
+        Atomically take one element from the queue. Wait blocking or spinning.
+
+    ***************************************************************************/
+
+    public T dequeue ();
+
+    /***************************************************************************
+
+        Atomically take one element from the queue store it into element
+
+        Params:
+            value = A value of queue
+
+        Returns:
+            If at least one element is in the queue, return true.
+            Otherwise return false
+
+    ***************************************************************************/
+
+    public bool tryDequeue (out T value);
+}
+
+/*******************************************************************************
+
+    Item of queue
+
+*******************************************************************************/
+
+private static class QueueNode (T)
+{
+    public QueueNode!T next;
     public T value;
 }
 
-/// Ditto
-public class CircularQueue(T)
+/*******************************************************************************
+
+    Blocking multi-producer multi-consumer queue
+
+*******************************************************************************/
+
+public class BlockingCircularQueue (T) : Queue!T
 {
-    private shared(QueueItem!T) head;
-    private shared(QueueItem!T) tail;
+    private QueueNode!T head;
+    private QueueNode!T tail;
+    private Mutex head_lock;
+    private Mutex tail_lock;
 
     /// Ctor
-    public this ()
+
+    public this()
     {
-        shared n = new QueueItem!T();
+        auto n = new QueueNode!T();
         this.head = this.tail = n;
-    }
-
-    /// Add an element in the queue
-    public void enqueue (T t)
-    {
-        shared item = new QueueItem!T();
-        item.value = t;
-
-        while (true)
-        {
-            auto last = this.tail;
-            auto cur = last.next;
-
-            if (cur !is null)
-            {
-                cas(&this.tail, last, cur);
-                continue;
-            }
-
-            shared(QueueItem!T) dummy = null;
-            if (cas(&last.next, dummy, item))
-                break;
-        }
-    }
-
-    /// Get an element from the queue
-    public T dequeue ()
-    {
-        T e = void;
-        while (!tryDequeue(e)) { }
-        return e;
+        this.head_lock = new Mutex();
+        this.tail_lock = new Mutex();
     }
 
     /***************************************************************************
 
-        Deserialization support
+        Atomically put one element into the queue.
 
         Params:
-            element = A element of queue
-
-        Returns:
-            true if the element exist else false
+            value = value to add
 
     ***************************************************************************/
 
-    public bool tryDequeue (out T element)
+    public void enqueue(T value)
     {
-        auto dummy = this.head;
-        auto last = this.tail;
-        auto next = dummy.next;
+        auto item = new QueueNode!T();
+        this.tail_lock.lock();
+        scope (exit) this.tail_lock.unlock();
 
-        if (dummy is last)
+        auto back = this.tail;
+        this.tail = item;
+        back.value = value;
+        atomicFence();
+        back.next = item;
+    }
+
+    /***************************************************************************
+
+        Atomically take one element from the queue. Wait blocking or spinning.
+
+    ***************************************************************************/
+
+    public T dequeue ()
+    {
+        this.head_lock.lock();
+        scope (exit) this.head_lock.unlock();
+
+        while (true)
         {
-            if (next is null)
-                return false;
-            else
-                cas(&this.tail, last, next);
-        }
-        else
-        {
-            if (cas(&this.head, dummy, next))
+            auto front = this.head;
+            auto second = front.next;
+            if (second !is null)
             {
-                element = next.value;
-                return true;
+                this.head = second;
+                return front.value;
+            }
+        }
+    }
+
+    /***************************************************************************
+
+        Atomically take one element from the queue store it into element
+
+        Params:
+            value = A value of queue
+
+        Returns:
+            If at least one element is in the queue, return true.
+            Otherwise return false
+
+    ***************************************************************************/
+
+    bool tryDequeue (out T value)
+    {
+        this.head_lock.lock();
+        scope (exit) this.head_lock.unlock();
+
+        auto front = this.head;
+        auto second = front.next;
+        if (second !is null) {
+            this.head = second;
+            value = front.value;
+            return true;
+        }
+        return false;
+    }
+}
+
+
+/*******************************************************************************
+
+    Non-blocking multi-producer multi-consumer queue
+
+*******************************************************************************/
+
+public class NonBlockingCircularQueue (T) : Queue!T
+{
+    private shared(QueueNode!T) head;
+    private shared(QueueNode!T) tail;
+
+    /// Ctor
+    public this ()
+    {
+        shared n = new QueueNode!T();
+        this.head = this.tail = n;
+    }
+
+    /***************************************************************************
+
+        Atomically put one element into the queue.
+
+        Params:
+            value = element to add
+
+    ***************************************************************************/
+
+    public void enqueue (T value)
+    {
+        shared node = new QueueNode!T();
+        node.value = value;
+
+        while (true)
+        {
+            auto tail = this.tail;
+            auto next = tail.next;
+
+            if (tail is this.tail)
+            {
+                if (next is null)
+                {
+                    if (cas(&tail.next, next, node))
+                        break;
+                }
+                else
+                    cas(&this.tail, tail, next);
+            }
+        }
+    }
+
+    /***************************************************************************
+
+        Atomically take one element from the queue. Wait blocking or spinning.
+
+    ***************************************************************************/
+
+    public T dequeue ()
+    {
+        T value = void;
+        while (!tryDequeue(value)) { }
+        return value;
+    }
+
+    /***************************************************************************
+
+        Atomically take one element from the queue store it into element
+
+        Params:
+            value = A element of queue
+
+        Returns:
+            If at least one element is in the queue, return true.
+            Otherwise return false
+
+    ***************************************************************************/
+
+    public bool tryDequeue (out T value)
+    {
+        auto head = this.head;
+        auto tail = this.tail;
+        auto next = head.next;
+
+        if (this.head is head)
+        {
+            if (head is tail)
+            {
+                if (next is null)
+                    return false;
+                else
+                    cas(&this.tail, tail, next);
+            }
+            else
+            {
+                if (cas(&this.head, head, next))
+                {
+                    value = next.value;
+                    return true;
+                }
             }
         }
 
         return false;
     }
 }
-
-/***
-  Start `writers` amount of threads to write into a queue.
-  Start `readers` amount of threads to read from the queue.
-  Each writer counts from 0 to `count` and sends each number into the queue.
-  The sum is checked at the end.
-*/
-void test_run(alias Q)(uint writers, uint readers, uint count)
+unittest
 {
-    import std.range;
-    import core.thread;
-    import core.sync.barrier : Barrier;
-    import std.bigint : BigInt;
-    //import fluent.asserts;
-    /* compute desired sum via Gauss formula */
-    BigInt correct_sum = BigInt(count) * BigInt(count-1) / 2 * writers;
-    /* compute sum via multiple threads and one queue */
-    BigInt sum = 0;
-    auto b = new Barrier(writers + readers);
-    auto q = new Q();
-    auto w = new Thread({
+    ///  Start `writers` amount of threads to write into a queue.
+    ///  Start `readers` amount of threads to read from the queue.
+    ///  Each writer counts from 0 to `count` and sends each number into the queue.
+    ///  The sum is checked at the end.
+    void test_run(alias Q)(uint writers, uint readers, uint count)
+    {
+        import std.bigint : BigInt;
+        import std.range;
+
+        import core.thread;
+
+        immutable(BigInt) correct_sum = BigInt(count) * BigInt(count-1) / 2 * writers;
+
+        BigInt sum = 0;
+
+        auto q = new Q();
+
+        auto write_worker = ()
+        {
             Thread[] ts;
-            foreach(i; 0 .. writers) {
-                auto t = new Thread({
-                        b.wait();
-                        foreach(n; 1 .. count) {
+            foreach (i; 0 .. writers)
+            {
+                auto t = new Thread(
+                    {
+                        foreach (n; 1 .. count)
                             q.enqueue(n);
-                        }
-                        });
+                        Thread.sleep(dur!("msecs")(1));
+                    }
+                );
                 t.start();
                 ts ~= t;
             }
-            foreach(t; ts) { t.join(); }
-            });
-    auto r = new Thread({
+
+            foreach (t; ts)
+                t.join();
+        };
+
+        auto read_worker = ()
+        {
             Thread[] ts;
-            foreach(i; 0 .. writers) {
-                auto t = new Thread({
+            foreach (i; 0 .. readers)
+            {
+                auto t = new Thread(
+                    {
                         BigInt s = 0;
-                        b.wait();
-                        foreach(_; 1 .. count) {
+                        foreach (_; 1 .. count)
+                        {
                             auto n = q.dequeue();
                             s += n;
                         }
                         synchronized { sum += s; }
-                        });
+                        Thread.sleep(dur!("msecs")(1));
+                    }
+                );
                 t.start();
                 ts ~= t;
             }
-            foreach(t; ts) { t.join(); }
-            });
-    w.start();
-    r.start();
-    w.join();
-    r.join();
-    //sum.should.equal(correct_sum);
 
+            foreach (t; ts)
+                t.join();
+        };
 
-    import std.stdio;
-    writeln(sum);
-    writeln(correct_sum);
-}
+        auto w = new Thread(write_worker);
+        auto r = new Thread(read_worker);
+        w.start();
+        r.start();
 
-unittest {
+        w.join();
+        r.join();
+
+        assert(sum == correct_sum);
+    }
     import std.datetime.stopwatch : benchmark;
     enum readers = 10;
     enum writers = 10;
-    enum bnd = 10; // size for bounded queues
-    enum count = 10000; // too small, so only functional test
-    void f0() { test_run!(CircularQueue!long)               (writers,readers,count); }
-    auto r = benchmark!(f0)(3);
+    enum count = 10_000;
+
+    void f0 ()
+    {
+        test_run!(BlockingCircularQueue!long)     (writers, readers, count);
+    }
+
+    void f1 ()
+    {
+        test_run!(NonBlockingCircularQueue!long)  (writers, readers, count);
+    }
+
+    auto r = benchmark!(f0, f1)(3);
     import std.stdio;
     writeln(r[0]);
+    writeln(r[1]);
+}
+
+unittest
+{
+    auto queue = new NonBlockingCircularQueue!long();
+    queue.enqueue(10);
+    queue.enqueue(20);
+
+    assert(queue.dequeue() == 10);
+    assert(queue.dequeue() == 20);
 }

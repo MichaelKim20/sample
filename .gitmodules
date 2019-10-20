@@ -43,3 +43,6 @@
 [submodule "vibe.d"]
 	path = submodules/vibe.d
 	url = https://github.com/bpfkorea/vibe.d.git
+[submodule "submodules/gfm"]
+	path = submodules/gfm
+	url = https://github.com/d-gamedev-team/gfm.git
