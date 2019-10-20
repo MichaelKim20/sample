@@ -76,7 +76,6 @@ public class BlockingQueue (T) : Queue!T
     private Mutex tail_lock;
 
     /// Ctor
-
     public this()
     {
         auto n = new QueueNode!T();
@@ -135,7 +134,6 @@ public class BlockingQueue (T) : Queue!T
         }
     }
 }
-
 
 /*******************************************************************************
 
