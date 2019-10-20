@@ -1,8 +1,8 @@
-module CircularQueue;
+module agora.common.Queue;
 
 /*******************************************************************************
 
-    Multi-producer multi-conumer queue
+    Multi-producer multi-consumer queue
     Non-blocking and blocking concurrent queue algorithms
 
     Copyright:
@@ -15,6 +15,8 @@ module CircularQueue;
 *******************************************************************************/
 import core.atomic;
 import core.sync.mutex;
+
+public alias WaitDg = void delegate();
 
 /*******************************************************************************
 
@@ -39,24 +41,12 @@ public interface Queue (T)
 
         Atomically take one element from the queue. Wait blocking or spinning.
 
-    ***************************************************************************/
-
-    public T dequeue ();
-
-    /***************************************************************************
-
-        Atomically take one element from the queue store it into element
-
-        Params:
-            value = A value of queue
-
-        Returns:
-            If at least one element is in the queue, return true.
-            Otherwise return false
+        Return:
+            The element at the front of the queue
 
     ***************************************************************************/
 
-    public bool tryDequeue (out T value);
+    public T dequeue (WaitDg dg = null);
 }
 
 /*******************************************************************************
@@ -71,13 +61,14 @@ private static class QueueNode (T)
     public T value;
 }
 
+
 /*******************************************************************************
 
     Blocking multi-producer multi-consumer queue
 
 *******************************************************************************/
 
-public class BlockingCircularQueue (T) : Queue!T
+public class BlockingQueue (T) : Queue!T
 {
     private QueueNode!T head;
     private QueueNode!T tail;
@@ -120,9 +111,12 @@ public class BlockingCircularQueue (T) : Queue!T
 
         Atomically take one element from the queue. Wait blocking or spinning.
 
+        Return:
+            The element at the front of the queue
+
     ***************************************************************************/
 
-    public T dequeue ()
+    public T dequeue (WaitDg dg = null)
     {
         this.head_lock.lock();
         scope (exit) this.head_lock.unlock();
@@ -136,35 +130,9 @@ public class BlockingCircularQueue (T) : Queue!T
                 this.head = second;
                 return front.value;
             }
+            if (dg !is null)
+                dg();
         }
-    }
-
-    /***************************************************************************
-
-        Atomically take one element from the queue store it into element
-
-        Params:
-            value = A value of queue
-
-        Returns:
-            If at least one element is in the queue, return true.
-            Otherwise return false
-
-    ***************************************************************************/
-
-    bool tryDequeue (out T value)
-    {
-        this.head_lock.lock();
-        scope (exit) this.head_lock.unlock();
-
-        auto front = this.head;
-        auto second = front.next;
-        if (second !is null) {
-            this.head = second;
-            value = front.value;
-            return true;
-        }
-        return false;
     }
 }
 
@@ -175,7 +143,7 @@ public class BlockingCircularQueue (T) : Queue!T
 
 *******************************************************************************/
 
-public class NonBlockingCircularQueue (T) : Queue!T
+public class NonBlockingQueue (T) : Queue!T
 {
     private shared(QueueNode!T) head;
     private shared(QueueNode!T) tail;
@@ -223,55 +191,42 @@ public class NonBlockingCircularQueue (T) : Queue!T
 
         Atomically take one element from the queue. Wait blocking or spinning.
 
+        Return:
+            The element at the front of the queue
+
     ***************************************************************************/
 
-    public T dequeue ()
+    public T dequeue (WaitDg dg = null)
     {
         T value = void;
-        while (!tryDequeue(value)) { }
+        while (true)
+        {
+            auto head = this.head;
+            auto tail = this.tail;
+            auto next = head.next;
+
+            if (this.head is head)
+            {
+                if (head is tail)
+                {
+                    if (next !is null)
+                        cas(&this.tail, tail, next);
+                }
+                else
+                {
+                    if (cas(&this.head, head, next))
+                    {
+                        value = next.value;
+                        break;
+                    }
+                }
+            }
+            if (dg !is null)
+                dg();
+        }
         return value;
     }
 
-    /***************************************************************************
-
-        Atomically take one element from the queue store it into element
-
-        Params:
-            value = A element of queue
-
-        Returns:
-            If at least one element is in the queue, return true.
-            Otherwise return false
-
-    ***************************************************************************/
-
-    public bool tryDequeue (out T value)
-    {
-        auto head = this.head;
-        auto tail = this.tail;
-        auto next = head.next;
-
-        if (this.head is head)
-        {
-            if (head is tail)
-            {
-                if (next is null)
-                    return false;
-                else
-                    cas(&this.tail, tail, next);
-            }
-            else
-            {
-                if (cas(&this.head, head, next))
-                {
-                    value = next.value;
-                    return true;
-                }
-            }
-        }
-
-        return false;
-    }
 }
 unittest
 {
@@ -354,12 +309,12 @@ unittest
 
     void f0 ()
     {
-        test_run!(BlockingCircularQueue!long)     (writers, readers, count);
+        test_run!(BlockingQueue!long)     (writers, readers, count);
     }
 
     void f1 ()
     {
-        test_run!(NonBlockingCircularQueue!long)  (writers, readers, count);
+        test_run!(NonBlockingQueue!long)  (writers, readers, count);
     }
 
     auto r = benchmark!(f0, f1)(3);
@@ -370,7 +325,7 @@ unittest
 
 unittest
 {
-    auto queue = new NonBlockingCircularQueue!long();
+    auto queue = new NonBlockingQueue!long();
     queue.enqueue(10);
     queue.enqueue(20);
 
