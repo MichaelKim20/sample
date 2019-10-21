@@ -2,8 +2,10 @@ module agora.common.Queue;
 
 /*******************************************************************************
 
-    Multi-producer multi-consumer queue
     Non-blocking and blocking concurrent queue algorithms
+
+    Implementations based on the paper "Simple, fast, and practical non-blocking 
+    and blocking concurrent queue algorithms"
 
     Copyright:
         Copyright (c) 2019 BOS Platform Foundation Korea
@@ -64,7 +66,7 @@ private static class QueueNode (T)
 
 /*******************************************************************************
 
-    Blocking multi-producer multi-consumer queue
+    Blocking queue
 
 *******************************************************************************/
 
@@ -137,9 +139,7 @@ public class BlockingQueue (T) : Queue!T
 
 /*******************************************************************************
 
-    Non-blocking multi-producer multi-consumer queue
-    Implementations based on the paper "Simple, fast, and practical non-blocking 
-    and blocking concurrent queue algorithms"
+    Non-blocking queue
 
 *******************************************************************************/
 
