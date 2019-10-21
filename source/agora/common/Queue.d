@@ -256,7 +256,7 @@ unittest
                     {
                         foreach (n; 1 .. count)
                             q.enqueue(n);
-                        Thread.sleep(dur!("msecs")(1));
+                        //Thread.sleep(dur!("msecs")(1));
                     }
                 );
                 t.start();
@@ -281,7 +281,7 @@ unittest
                             s += n;
                         }
                         synchronized { sum += s; }
-                        Thread.sleep(dur!("msecs")(1));
+                        //Thread.sleep(dur!("msecs")(1));
                     }
                 );
                 t.start();

@@ -87,7 +87,8 @@ public struct Message
     MsgType type;
     Variant data;
 
-    this(T...)(MsgType t, T vals) if (T.length > 0)
+    this (T...) (MsgType t, T vals)
+    if (T.length > 0)
     {
         static if (T.length == 1)
         {
@@ -103,7 +104,7 @@ public struct Message
         }
     }
 
-    @property auto convertsTo(T...)()
+    @property auto convertsTo (T...) ()
     {
         static if (T.length == 1)
         {
@@ -116,7 +117,7 @@ public struct Message
         }
     }
 
-    @property auto get(T...)()
+    @property auto get (T...) ()
     {
         static if (T.length == 1)
         {
@@ -132,7 +133,7 @@ public struct Message
         }
     }
 
-    auto map(Op)(Op op)
+    auto map (Op) (Op op)
     {
         alias Args = Parameters!(Op);
 
@@ -158,9 +159,26 @@ public struct Message
 * get() call is effectively local.  setMaxMsgs may be used by any thread
 * to limit the size of the message queue.
 */
-class MessageBox
+public class MessageBox
 {
-    this() @trusted nothrow /* TODO: make @safe after relevant druntime PR gets merged */
+    private alias OnMaxFn = bool function(Tid);
+    private alias ListT = List!(Message);
+
+    private ListT m_localBox;
+    private ListT m_localPty;
+
+    private Mutex m_lock;
+    private Condition m_putMsg;
+    private Condition m_notFull;
+    private size_t m_putQueue;
+    private ListT m_sharedBox;
+    private ListT m_sharedPty;
+    private OnMaxFn m_onMaxMsgs;
+    private size_t m_localMsgs;
+    private size_t m_maxMsgs;
+    private bool m_closed;
+
+    public this () @trusted nothrow /* TODO: make @safe after relevant druntime PR gets merged */
     {
         m_lock = new Mutex;
         m_closed = false;
@@ -178,7 +196,7 @@ class MessageBox
     }
 
     ///
-    final @property bool isClosed() @safe @nogc pure
+    public final @property bool isClosed () @safe @nogc pure
     {
         synchronized (m_lock)
         {
@@ -197,7 +215,8 @@ class MessageBox
     *         unbounded.
     *  call = The routine to call when the queue is full.
     */
-    final void setMaxMsgs(size_t num, bool function(Tid) call) @safe @nogc pure
+    public final void setMaxMsgs (size_t num, bool function(Tid) call)
+    @safe @nogc pure
     {
         synchronized (m_lock)
         {
@@ -220,7 +239,7 @@ class MessageBox
     * Throws:
     *  An exception if the queue is full and onCrowdingDoThis throws.
     */
-    final void put(ref Message msg)
+    public final void put (ref Message msg)
     {
         synchronized (m_lock)
         {
@@ -236,16 +255,19 @@ class MessageBox
                         m_putMsg.notify();
                         return;
                     }
+
                     if (!mboxFull() || isControlMsg(msg))
                     {
                         m_sharedBox.put(msg);
                         m_putMsg.notify();
                         return;
                     }
+
                     if (m_onMaxMsgs !is null && !m_onMaxMsgs(thisTid))
                     {
                         return;
                     }
+
                     m_putQueue++;
                     m_notFull.wait();
                     m_putQueue--;
@@ -270,7 +292,7 @@ class MessageBox
     * if the owner thread terminates and no existing messages match the
     * supplied ops.
     */
-    bool get(T...)(scope T vals)
+    public bool get (T...) (scope T vals)
     {
         import std.meta : AliasSeq;
 
@@ -290,7 +312,7 @@ class MessageBox
             enum timedWait = false;
         }
 
-        bool onStandardMsg(ref Message msg)
+        bool onStandardMsg (ref Message msg)
         {
             foreach (i, t; Ops)
             {
@@ -313,7 +335,7 @@ class MessageBox
             return false;
         }
 
-        bool onLinkDeadMsg(ref Message msg)
+        bool onLinkDeadMsg (ref Message msg)
         {
             assert(msg.convertsTo!(Tid),
                     "Message could be converted to Tid");
@@ -345,7 +367,7 @@ class MessageBox
             return false;
         }
 
-        bool onControlMsg(ref Message msg)
+        bool onControlMsg (ref Message msg)
         {
             switch (msg.type)
             {
@@ -356,7 +378,7 @@ class MessageBox
             }
         }
 
-        bool scan(ref ListT list)
+        bool scan (ref ListT list)
         {
             for (auto range = list[]; !range.empty;)
             {
@@ -400,7 +422,7 @@ class MessageBox
             return false;
         }
 
-        bool pty(ref ListT list)
+        bool pty (ref ListT list)
         {
             if (!list.empty)
             {
@@ -490,9 +512,9 @@ class MessageBox
     * control messages, clears out message queues, and sets a flag to
     * reject any future messages.
     */
-    final void close()
+    final void close ()
     {
-        static void onLinkDeadMsg(ref Message msg)
+        static void onLinkDeadMsg (ref Message msg)
         {
             assert(msg.convertsTo!(Tid),
                     "Message could be converted to Tid");
@@ -503,7 +525,7 @@ class MessageBox
                 thisInfo.owner = Tid.init;
         }
 
-        static void sweep(ref ListT list)
+        static void sweep (ref ListT list)
         {
             for (auto range = list[]; !range.empty; range.popFront())
             {
@@ -524,58 +546,38 @@ class MessageBox
         sweep(arrived);
     }
 
-private:
     // Routines involving local data only, no lock needed.
 
-    bool mboxFull() @safe @nogc pure nothrow
+    private bool mboxFull () @safe @nogc pure nothrow
     {
         return m_maxMsgs && m_maxMsgs <= m_localMsgs + m_sharedBox.length;
     }
 
-    void updateMsgCount() @safe @nogc pure nothrow
+    private void updateMsgCount() @safe @nogc pure nothrow
     {
         m_localMsgs = m_localBox.length;
     }
 
-    bool isControlMsg(ref Message msg) @safe @nogc pure nothrow
+    private bool isControlMsg(ref Message msg) @safe @nogc pure nothrow
     {
         return msg.type != MsgType.standard && msg.type != MsgType.priority;
     }
 
-    bool isPriorityMsg(ref Message msg) @safe @nogc pure nothrow
+    private bool isPriorityMsg(ref Message msg) @safe @nogc pure nothrow
     {
         return msg.type == MsgType.priority;
     }
 
-    bool isLinkDeadMsg(ref Message msg) @safe @nogc pure nothrow
+    private bool isLinkDeadMsg(ref Message msg) @safe @nogc pure nothrow
     {
         return msg.type == MsgType.linkDead;
     }
-
-    alias OnMaxFn = bool function(Tid);
-    alias ListT = List!(Message);
-
-    ListT m_localBox;
-    ListT m_localPty;
-
-    Mutex m_lock;
-    Condition m_putMsg;
-    Condition m_notFull;
-    size_t m_putQueue;
-    ListT m_sharedBox;
-    ListT m_sharedPty;
-    OnMaxFn m_onMaxMsgs;
-    size_t m_localMsgs;
-    size_t m_maxMsgs;
-    bool m_closed;
 }
 
-/*
-*
-*/
-struct List(T)
+///
+private struct List(T)
 {
-    struct Range
+    public struct Range
     {
         import std.exception : enforce;
 
@@ -610,12 +612,12 @@ struct List(T)
         private Node* m_prev;
     }
 
-    void put(T val)
+    public void put(T val)
     {
         put(newNode(val));
     }
 
-    void put(ref List!(T) rhs)
+    public void put(ref List!(T) rhs)
     {
         if (!rhs.empty)
         {
@@ -631,12 +633,12 @@ struct List(T)
         }
     }
 
-    Range opSlice()
+    public Range opSlice()
     {
         return Range(cast(Node*)&m_first);
     }
 
-    void removeAt(Range r)
+    public void removeAt(Range r)
     {
         import std.exception : enforce;
 
@@ -654,113 +656,122 @@ struct List(T)
         m_count--;
     }
 
-    @property size_t length()
+    public @property size_t length()
     {
         return m_count;
     }
 
-    void clear()
+    public void clear()
     {
         m_first = m_last = null;
         m_count = 0;
     }
 
-    @property bool empty()
+    public @property bool empty()
     {
         return m_first is null;
     }
 
-    private:
-        struct Node
-        {
-            Node* next;
-            T val;
+    private struct Node
+    {
+        Node* next;
+        T val;
 
-            this(T v)
+        public this(T v)
+        {
+            val = v;
+        }
+    }
+
+    static shared struct SpinLock
+    {
+        public void lock ()
+        {
+            while (!cas(&locked, false, true))
             {
-                val = v;
+                Thread.yield();
             }
         }
 
-        static shared struct SpinLock
+        public void unlock ()
         {
-            void lock() { while (!cas(&locked, false, true)) { Thread.yield(); } }
-            void unlock() { atomicStore!(MemoryOrder.rel)(locked, false); }
-            bool locked;
+            atomicStore!(MemoryOrder.rel)(locked, false);
         }
 
-        static shared SpinLock sm_lock;
-        static shared Node* sm_head;
+        public bool locked;
+    }
 
-        Node* newNode(T v)
+    static shared SpinLock sm_lock;
+    static shared Node* sm_head;
+
+    public Node* newNode(T v)
+    {
+        Node* n;
         {
-            Node* n;
-            {
-                sm_lock.lock();
-                scope (exit) sm_lock.unlock();
-
-                if (sm_head)
-                {
-                    n = cast(Node*) sm_head;
-                    sm_head = sm_head.next;
-                }
-            }
-            if (n)
-            {
-                import std.conv : emplace;
-                emplace!Node(n, v);
-            }
-            else
-            {
-                n = new Node(v);
-            }
-            return n;
-        }
-
-        void freeNode(Node* n)
-        {
-            // destroy val to free any owned GC memory
-            destroy(n.val);
-
             sm_lock.lock();
             scope (exit) sm_lock.unlock();
 
-            auto sn = cast(shared(Node)*) n;
-            sn.next = sm_head;
-            sm_head = sn;
-        }
-
-        void put(Node* n)
-        {
-            m_count++;
-            if (!empty)
+            if (sm_head)
             {
-                m_last.next = n;
-                m_last = n;
-                return;
+                n = cast(Node*) sm_head;
+                sm_head = sm_head.next;
             }
-            m_first = n;
-            m_last = n;
         }
 
-        Node* m_first;
-        Node* m_last;
-        size_t m_count;
+        if (n)
+        {
+            import std.conv : emplace;
+            emplace!Node(n, v);
+        }
+        else
+        {
+            n = new Node(v);
+        }
+
+        return n;
+    }
+
+    public void freeNode(Node* n)
+    {
+        // destroy val to free any owned GC memory
+        destroy(n.val);
+
+        sm_lock.lock();
+        scope (exit) sm_lock.unlock();
+
+        auto sn = cast(shared(Node)*) n;
+        sn.next = sm_head;
+        sm_head = sn;
+    }
+
+    public void put(Node* n)
+    {
+        m_count++;
+        if (!empty)
+        {
+            m_last.next = n;
+            m_last = n;
+            return;
+        }
+        m_first = n;
+        m_last = n;
+    }
+
+    public Node* m_first;
+    public Node* m_last;
+    public size_t m_count;
 }
 /**
  * An opaque type used to represent a logical thread.
  */
-struct Tid
+public struct Tid
 {
-private:
-    this(MessageBox m) @safe pure nothrow @nogc
+    private MessageBox mbox;
+
+    private this (MessageBox m) @safe pure nothrow @nogc
     {
         mbox = m;
     }
-
-    MessageBox mbox;
-
-public:
 
     /**
      * Generate a convenient string for identifying this Tid.  This is only
@@ -769,18 +780,17 @@ public:
      * that a Tid executed in the future will have the same toString() output
      * as another Tid that has already terminated.
      */
-    void toString(scope void delegate(const(char)[]) sink)
+    public void toString (scope void delegate(const(char)[]) sink)
     {
         import std.format : formattedWrite;
         formattedWrite(sink, "Tid(%x)", cast(void*) mbox);
     }
-
 }
 
 /**
  * Returns: The $(LREF Tid) of the caller's thread.
  */
-@property Tid thisTid() @safe
+public @property Tid thisTid() @safe
 {
     // TODO: remove when concurrency is safe
     static auto trus() @trusted
@@ -794,7 +804,7 @@ public:
     return trus();
 }
 
-@property ref ThreadInfo thisInfo() nothrow
+public @property ref ThreadInfo thisInfo() nothrow
 {
     //if (scheduler is null)
         return ThreadInfo.thisInfo;
@@ -808,11 +818,11 @@ public:
  * with each logical thread.  It contains all implementation-level information
  * needed by the internal API.
  */
-struct ThreadInfo
+public struct ThreadInfo
 {
-    Tid ident;
-    bool[Tid] links;
-    Tid owner;
+    public Tid ident;
+    public bool[Tid] links;
+    public Tid owner;
 
     /**
      * Gets a thread-local instance of ThreadInfo.
@@ -821,7 +831,7 @@ struct ThreadInfo
      * default instance when info is requested for a thread not created by the
      * Scheduler.
      */
-    static @property ref thisInfo() nothrow
+    public static @property ref thisInfo() nothrow
     {
         static ThreadInfo val;
         return val;
@@ -834,7 +844,7 @@ struct ThreadInfo
      * the messaging system for the thread and notifies interested parties of
      * the thread's termination.
      */
-    void cleanup()
+    public void cleanup()
     {
         if (ident.mbox !is null)
             ident.mbox.close();
