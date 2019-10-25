@@ -1,44 +1,27 @@
 module agora.common.Channel;
 
+/*******************************************************************************
+
+    This file contains the implementation of channels.
+
+    Copyright:
+        Copyright (c) 2019 BOS Platform Foundation Korea
+        All rights reserved.
+
+    License:
+        MIT License. See LICENSE for details.
+
+*******************************************************************************/
+
 import agora.common.Queue;
 
 import core.thread;
 
-public class SimpleChannel (T)
-{
-    private NonBlockingQueue!T queue;
-    private bool closed;
+/*******************************************************************************
 
-    public this ()
-    {
-        this.queue = new NonBlockingQueue!T;
-    }
+    Interface for all queues.
 
-    public ~this ()
-    {
-        this.queue.close();
-    }
-
-    public @property bool isClosed ()
-    {
-        return this.queue.isClosed;
-    }
-
-    public void send (T data)
-    {
-        this.queue.enqueue(data);
-    }
-
-    public T receive ()
-    {
-        return this.queue.dequeue();
-    }
-
-    public void close ()
-    {
-        this.queue.close();
-    }
-}
+*******************************************************************************/
 
 private struct SudoFiber (T)
 {
@@ -47,13 +30,24 @@ private struct SudoFiber (T)
     public T  elem;
 }
 
+/*******************************************************************************
+
+    Interface for all queues.
+
+*******************************************************************************/
+
 public class Channel (T)
 {
-    private bool closed;
+    ///
     private NonBlockingQueue!T queue;
+
+    /// collection of send waiters
     private NonBlockingQueue!(SudoFiber!(T)) sendq;
+
+    /// collection of recv waiters
     private NonBlockingQueue!(SudoFiber!(T)) recvq;
 
+    /// Ctor
     public this ()
     {
         this.queue = new NonBlockingQueue!T;
@@ -61,6 +55,7 @@ public class Channel (T)
         this.recvq = new NonBlockingQueue!(SudoFiber!T);
     }
 
+    ///
     public ~this ()
     {
         this.queue.close();
@@ -68,10 +63,30 @@ public class Channel (T)
         this.recvq.close();
     }
 
+    /***************************************************************************
+
+        Return closing status
+
+        Return:
+            true if channel is closed, otherwise false
+
+    ***************************************************************************/
+
     public @property bool isClosed ()
     {
         return this.queue.isClosed;
     }
+
+    /***************************************************************************
+
+        Send data `elem`.
+        First, check the fiber that is waiting for reception.
+        If there are no targets there, add fiber and data to the sending queue.
+
+        Return:
+            true if the sending is successful, otherwise false
+
+    ***************************************************************************/
 
     public bool send (T elem)
     {
@@ -88,7 +103,8 @@ public class Channel (T)
         SudoFiber!T sf;
         if (this.recvq.tryDequeue(sf))
         {
-            send_ (sf, elem);
+            *(sf.elem_ptr) = elem;
+            sf.fiber.call();
             return true;
         }
 
@@ -99,16 +115,19 @@ public class Channel (T)
 
         this.sendq.enqueue(new_sf);
 
-        fiber.yield();
+        Fiber.yield();
 
         return true;
     }
 
-    private void send_ (SudoFiber!T sf, T elem)
-    {
-        *(sf.elem_ptr) = elem;
-        sf.fiber.call();
-    }
+    /***************************************************************************
+
+        Write the data received in `elem
+
+        Return:
+            true if the receiving is successful, otherwise false
+
+    ***************************************************************************/
 
     public bool receive (T* elem)
     {
@@ -132,7 +151,8 @@ public class Channel (T)
         SudoFiber!T sf;
         if (this.sendq.tryDequeue(sf))
         {
-            recv_ (sf, elem);
+            *(elem) = sf.elem;
+            sf.fiber.call();
             return true;
         }
 
@@ -141,19 +161,23 @@ public class Channel (T)
         new_sf.elem_ptr = elem;
 
         this.recvq.enqueue(new_sf);
-        fiber.yield();
+
+        Fiber.yield();
 
         return true;
     }
 
-    private void recv_ (SudoFiber!T sf, T* elem)
-    {
-        *(elem) = sf.elem;
-        sf.fiber.call();
-    }
+    /***************************************************************************
+
+        Close channel
+
+    ***************************************************************************/
 
     public void close ()
     {
+        if (isClosed())
+            return false;
+
         this.queue.close();
 
         SudoFiber!T sf;
@@ -179,6 +203,7 @@ public class Channel (T)
     }
 }
 
+//
 unittest
 {
     import core.thread;
@@ -199,6 +224,7 @@ unittest
     assert(res == 27);
 }
 
+//
 unittest
 {
     import core.thread;
@@ -219,6 +245,7 @@ unittest
     assert(res == "Hi Tom");
 }
 
+//
 unittest
 {
     Channel!int in_channel = new Channel!int();
@@ -230,14 +257,10 @@ unittest
 
     in_channel.send(5);
     in_channel.close();
-    in_channel.receive(&res);
-
-    import std.stdio;
-    writefln("%d", res);
-
-    //assert(res == int.init);
+    assert(!in_channel.receive(&res));
 }
 
+//
 unittest
 {
     import core.thread;
@@ -258,29 +281,29 @@ unittest
     assert(res == 27);
 }
 
+//
 unittest
 {
-    import core.thread;
-    import std.stdio;
-
     Channel!int in_channel = new Channel!int();
     Channel!int out_channel = new Channel!int();
 
-    void sender() {
-        foreach (int idx; 1..10)
+    void sender ()
+    {
+        foreach (int idx; 0..10)
         {
             in_channel.send(idx);
             Fiber.yield();
         }
     }
 
-    void receiver() {
-        int x = 1;
+    void receiver ()
+    {
+        int expect = 0;
         while (true)
         {
             int res;
             in_channel.receive(&res);
-            assert(res == x++);
+            assert(res == expect++);
             Fiber.yield();
         }
     }
@@ -288,9 +311,12 @@ unittest
     auto f1 = new Fiber(&sender);
     auto f2 = new Fiber(&receiver);
 
-    f1.call();
-    f2.call();
+    foreach (i; 0..5)
+    {
+        f1.call();
+        f2.call();
 
-    f2.call();
-    f1.call();
+        f2.call();
+        f1.call();
+    }
 }

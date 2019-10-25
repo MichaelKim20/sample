@@ -15,6 +15,7 @@ module agora.common.Queue;
         MIT License. See LICENSE for details.
 
 *******************************************************************************/
+
 import core.atomic;
 import core.sync.mutex;
 
@@ -298,30 +299,7 @@ public class NonBlockingQueue (T) : Queue!T
         }
         return false;
     }
-    /*
-    public bool tryDequeue_no_sync(out T value)
-    {
-        auto head = this.head;
-        auto tail = this.tail;
-        auto next = head.next;
 
-            if (head is tail)
-            {
-                if (next !is null)
-                    cas(&this.tail, tail, next);
-            }
-            else
-            {
-                if (cas(&this.head, head, next))
-                {
-                    value = cast(T)next.value;
-                    return true;
-                }
-            }
-        }
-        return false;
-    }
-    */
     public @property bool isClosed ()
     {
         return this.closed;
@@ -404,6 +382,7 @@ unittest
 
         auto w = new Thread(write_worker);
         auto r = new Thread(read_worker);
+
         w.start();
         r.start();
 
