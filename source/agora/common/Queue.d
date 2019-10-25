@@ -49,6 +49,20 @@ public interface Queue (T)
     ***************************************************************************/
 
     public T dequeue (WaitDg dg = null);
+
+    /***************************************************************************
+
+        Atomically take one element from the queue.
+
+        Params:
+            value = value to take
+
+        Return:
+            true if a element is retrieved, otherwise false
+
+    ***************************************************************************/
+
+    public bool tryDequeue(out T value);
 }
 
 /*******************************************************************************
@@ -124,16 +138,44 @@ public class BlockingQueue (T) : Queue!T
 
         while (true)
         {
-            auto front = this.head;
-            auto second = front.next;
+            auto head = this.head;
+            auto second = head.next;
             if (second !is null)
             {
                 this.head = second;
-                return front.value;
+                return head.value;
             }
             if (dg !is null)
                 dg();
         }
+    }
+
+    /***************************************************************************
+
+        Atomically take one element from the queue.
+
+        Params:
+            value = value to take
+
+        Return:
+            true if a element is retrieved, otherwise false
+
+    ***************************************************************************/
+
+    public bool tryDequeue (out T value)
+    {
+        this.head_lock.lock();
+        scope (exit) this.head_lock.unlock();
+
+        auto head = this.head;
+        auto second = head.next;
+        if (second !is null)
+        {
+            this.head = second;
+            value = head.value;
+            return true;
+        }
+        return false;
     }
 }
 
@@ -148,11 +190,14 @@ public class NonBlockingQueue (T) : Queue!T
     private shared(QueueNode!T) head;
     private shared(QueueNode!T) tail;
 
+    private shared(bool) closed;
+
     /// Ctor
     public this ()
     {
         shared n = new QueueNode!T();
         this.head = this.tail = n;
+        this.closed = false;
     }
 
     /***************************************************************************
@@ -166,8 +211,11 @@ public class NonBlockingQueue (T) : Queue!T
 
     public void enqueue (T value)
     {
+        if (isClosed)
+            return;
+
         shared node = new QueueNode!T();
-        node.value = value;
+        node.value = cast(shared(T))value;
 
         while (true)
         {
@@ -198,36 +246,100 @@ public class NonBlockingQueue (T) : Queue!T
 
     public T dequeue (WaitDg dg = null)
     {
-        T value = void;
-        while (true)
-        {
-            auto head = this.head;
-            auto tail = this.tail;
-            auto next = head.next;
+        if (isClosed)
+            return T.init;
 
-            if (this.head is head)
-            {
-                if (head is tail)
-                {
-                    if (next !is null)
-                        cas(&this.tail, tail, next);
-                }
-                else
-                {
-                    if (cas(&this.head, head, next))
-                    {
-                        value = next.value;
-                        break;
-                    }
-                }
-            }
+        T value = void;
+        while (!this.tryDequeue(value))
+        {
             if (dg !is null)
                 dg();
         }
         return value;
     }
 
+    /***************************************************************************
+
+        Atomically take one element from the queue.
+
+        Params:
+            value = value to take
+
+        Return:
+            true if a element is retrieved, otherwise false
+
+    ***************************************************************************/
+
+    public bool tryDequeue(out T value)
+    {
+        auto head = this.head;
+        auto tail = this.tail;
+        auto next = head.next;
+
+        if (this.head is head)
+        {
+            if (head is tail)
+            {
+                if (next !is null)
+                {
+                    cas(&this.tail, tail, next);
+                    tail = this.tail;
+                }
+            }
+
+            if (head !is tail)
+            {
+                if (cas(&this.head, head, next))
+                {
+                    value = cast(T)next.value;
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+    /*
+    public bool tryDequeue_no_sync(out T value)
+    {
+        auto head = this.head;
+        auto tail = this.tail;
+        auto next = head.next;
+
+            if (head is tail)
+            {
+                if (next !is null)
+                    cas(&this.tail, tail, next);
+            }
+            else
+            {
+                if (cas(&this.head, head, next))
+                {
+                    value = cast(T)next.value;
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+    */
+    public @property bool isClosed ()
+    {
+        return this.closed;
+    }
+
+    public void close ()
+    {
+        while (true)
+        {
+            if (this.closed is true)
+                break;
+
+            if (cas(&this.closed, false, true))
+                break;
+        }
+    }
 }
+
 unittest
 {
     ///  Start `writers` amount of threads to write into a queue.
@@ -256,7 +368,6 @@ unittest
                     {
                         foreach (n; 1 .. count)
                             q.enqueue(n);
-                        //Thread.sleep(dur!("msecs")(1));
                     }
                 );
                 t.start();
@@ -281,7 +392,6 @@ unittest
                             s += n;
                         }
                         synchronized { sum += s; }
-                        //Thread.sleep(dur!("msecs")(1));
                     }
                 );
                 t.start();
@@ -302,7 +412,6 @@ unittest
 
         assert(sum == correct_sum);
     }
-    import std.datetime.stopwatch : benchmark;
     enum readers = 10;
     enum writers = 10;
     enum count = 10_000;
@@ -317,10 +426,15 @@ unittest
         test_run!(NonBlockingQueue!long)  (writers, readers, count);
     }
 
+    f0();
+    f1();
+/*
+    import std.datetime.stopwatch : benchmark;
     auto r = benchmark!(f0, f1)(3);
     import std.stdio;
     writeln(r[0]);
     writeln(r[1]);
+*/
 }
 
 unittest
