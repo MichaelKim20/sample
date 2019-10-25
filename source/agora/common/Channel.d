@@ -2,8 +2,6 @@ module agora.common.Channel;
 
 import agora.common.Queue;
 
-
-import std.stdio;
 import core.thread;
 
 public class SimpleChannel (T)
@@ -40,52 +38,6 @@ public class SimpleChannel (T)
     {
         this.queue.close();
     }
-}
-
-unittest
-{
-    import core.thread;
-
-    SimpleChannel!int in_channel = new SimpleChannel!int();
-    SimpleChannel!int out_channel = new SimpleChannel!int();
-
-    new Thread({
-        int x = in_channel.receive();
-        int y = x * x * x;
-        out_channel.send(y);
-    }).start();
-
-    in_channel.send(3);
-    assert(out_channel.receive() == 27);
-}
-
-unittest
-{
-    import core.thread;
-
-    SimpleChannel!string in_channel = new SimpleChannel!string();
-    SimpleChannel!string out_channel = new SimpleChannel!string();
-
-    new Thread({
-        string name = in_channel.receive();
-        string greeting = "Hi " ~ name;
-        out_channel.send(greeting);
-    }).start();
-
-    in_channel.send("Tom");
-    assert(out_channel.receive() == "Hi Tom");
-}
-
-unittest
-{
-    SimpleChannel!int in_channel = new SimpleChannel!int();
-
-    in_channel.send(3);
-    assert(in_channel.receive() == 3);
-
-    in_channel.send(5);
-    in_channel.close();
-    assert(in_channel.receive() == int.init);
 }
 
 private struct SudoFiber (T)
@@ -225,6 +177,65 @@ public class Channel (T)
                 break;
         }
     }
+}
+
+unittest
+{
+    import core.thread;
+
+    Channel!int in_channel = new Channel!int();
+    Channel!int out_channel = new Channel!int();
+
+    new Thread({
+        int x;
+        in_channel.receive(&x);
+        int y = x * x * x;
+        out_channel.send(y);
+    }).start();
+
+    in_channel.send(3);
+    int res;
+    out_channel.receive(&res);
+    assert(res == 27);
+}
+
+unittest
+{
+    import core.thread;
+
+    Channel!string in_channel = new Channel!string();
+    Channel!string out_channel = new Channel!string();
+
+    new Thread({
+        string name;
+        in_channel.receive(&name);
+        string greeting = "Hi " ~ name;
+        out_channel.send(greeting);
+    }).start();
+
+    in_channel.send("Tom");
+    string res;
+    out_channel.receive(&res);
+    assert(res == "Hi Tom");
+}
+
+unittest
+{
+    Channel!int in_channel = new Channel!int();
+
+    int res;
+    in_channel.send(3);
+    in_channel.receive(&res);
+    assert(res == 3);
+
+    in_channel.send(5);
+    in_channel.close();
+    in_channel.receive(&res);
+
+    import std.stdio;
+    writefln("%d", res);
+
+    //assert(res == int.init);
 }
 
 unittest
