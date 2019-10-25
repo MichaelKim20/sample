@@ -145,6 +145,7 @@ public class Channel (T)
         if (this.queue.tryDequeue(value))
         {
             *elem = value;
+            Fiber.yield();
             return true;
         }
 
@@ -161,9 +162,7 @@ public class Channel (T)
         new_sf.elem_ptr = elem;
 
         this.recvq.enqueue(new_sf);
-
         Fiber.yield();
-
         return true;
     }
 
@@ -175,9 +174,6 @@ public class Channel (T)
 
     public void close ()
     {
-        if (isClosed())
-            return false;
-
         this.queue.close();
 
         SudoFiber!T sf;
@@ -203,7 +199,7 @@ public class Channel (T)
     }
 }
 
-//
+// multi-thread data type is int
 unittest
 {
     import core.thread;
@@ -224,7 +220,7 @@ unittest
     assert(res == 27);
 }
 
-//
+// multi-thread data type is string
 unittest
 {
     import core.thread;
@@ -245,7 +241,7 @@ unittest
     assert(res == "Hi Tom");
 }
 
-//
+// data type is string
 unittest
 {
     Channel!int in_channel = new Channel!int();
@@ -260,28 +256,7 @@ unittest
     assert(!in_channel.receive(&res));
 }
 
-//
-unittest
-{
-    import core.thread;
-
-    Channel!int in_channel = new Channel!int();
-    Channel!int out_channel = new Channel!int();
-
-    new Thread({
-        int x;
-        in_channel.receive(&x);
-        int y = x * x * x;
-        out_channel.send(y);
-    }).start();
-
-    in_channel.send(3);
-    int res;
-    out_channel.receive(&res);
-    assert(res == 27);
-}
-
-//
+// multi fiber, single thread data type is int
 unittest
 {
     Channel!int in_channel = new Channel!int();
@@ -318,5 +293,37 @@ unittest
 
         f2.call();
         f1.call();
+    }
+}
+
+unittest
+{
+    import core.thread;
+
+    Channel!int in_channel = new Channel!int();
+
+    new Thread({
+        foreach (int idx; 0..10)
+        {
+            in_channel.send(idx);
+        }
+    }).start();
+
+    void receiver ()
+    {
+        int expect = 0;
+        while (true)
+        {
+            int res;
+            in_channel.receive(&res);
+            assert(res == expect++);
+            Fiber.yield();
+        }
+    }
+    auto f2 = new Fiber(&receiver);
+
+    foreach (i; 0..10)
+    {
+        f2.call();
     }
 }
