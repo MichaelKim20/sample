@@ -17,12 +17,7 @@ import agora.common.Queue;
 
 import core.thread;
 
-/*******************************************************************************
-
-    Interface for all queues.
-
-*******************************************************************************/
-
+///
 private struct SudoFiber (T)
 {
     public Fiber fiber;
@@ -32,12 +27,19 @@ private struct SudoFiber (T)
 
 /*******************************************************************************
 
-    Interface for all queues.
+    A channel is a communication class using which fiber can communicate
+    with each other.
+    Technically, a channel is a data transfer pipe where data can be passed
+    into or read from.
+    Hence one fiber can send data into a channel, while other fiber can read
+    that data from the same channel
 
 *******************************************************************************/
 
 public class Channel (T)
 {
+    ///
+    private size_t qsize;
     ///
     private NonBlockingQueue!T queue;
 
@@ -48,8 +50,9 @@ public class Channel (T)
     private NonBlockingQueue!(SudoFiber!(T)) recvq;
 
     /// Ctor
-    public this ()
+    public this (size_t qsize = 0)
     {
+        this.qsize = qsize;
         this.queue = new NonBlockingQueue!T;
         this.sendq = new NonBlockingQueue!(SudoFiber!T);
         this.recvq = new NonBlockingQueue!(SudoFiber!T);
@@ -61,20 +64,6 @@ public class Channel (T)
         this.queue.close();
         this.sendq.close();
         this.recvq.close();
-    }
-
-    /***************************************************************************
-
-        Return closing status
-
-        Return:
-            true if channel is closed, otherwise false
-
-    ***************************************************************************/
-
-    public @property bool isClosed ()
-    {
-        return this.queue.isClosed;
     }
 
     /***************************************************************************
@@ -97,14 +86,15 @@ public class Channel (T)
         if (fiber is null)
         {
             bool res;
-            bool waiting = true;
-            auto sender = new Fiber({
+            bool is_waiting = true;
+
+            new Fiber({
                 res = this.send(elem);
-                waiting = false;
-            });
-            sender.call();
-            while (waiting)
-                Thread.sleep(dur!("msecs")(5));
+                is_waiting = false;
+            }).call();
+
+            while (is_waiting)
+                Thread.sleep(dur!("msecs")(1));
             return res;
         }
 
@@ -117,21 +107,25 @@ public class Channel (T)
             return true;
         }
 
+        if (this.queue.count < this.qsize)
+        {
+            this.queue.enqueue(elem);
+            return true;
+        }
+
         SudoFiber!T new_sf;
         new_sf.fiber = fiber;
         new_sf.elem_ptr = null;
         new_sf.elem = elem;
 
         this.sendq.enqueue(new_sf);
-
         Fiber.yield();
-
         return true;
     }
 
     /***************************************************************************
 
-        Write the data received in `elem
+        Write the data received in `elem`
 
         Return:
             true if the receiving is successful, otherwise false
@@ -141,21 +135,24 @@ public class Channel (T)
     public bool receive (T* elem)
     {
         if (isClosed())
+        {
+            (*elem) = T.init;
             return false;
+        }
 
         Fiber fiber = Fiber.getThis();
         if (fiber is null)
         {
             bool res;
-            bool waiting = true;
-            auto receiver = new Fiber({
-                res = this.receive(elem);
-                waiting = false;
-            });
+            bool is_waiting = true;
 
-            receiver.call();
-            while (waiting)
-                Thread.sleep(dur!("msecs")(5));
+            new Fiber({
+                res = this.receive(elem);
+                is_waiting = false;
+            }).call();
+
+            while (is_waiting)
+                Thread.sleep(dur!("msecs")(1));
             return res;
         }
 
@@ -168,15 +165,33 @@ public class Channel (T)
             return true;
         }
 
+        T val;
+        if (this.queue.tryDequeue(val))
+        {
+            *(elem) = val;
+            return true;
+        }
+
         SudoFiber!T new_sf;
         new_sf.fiber = fiber;
         new_sf.elem_ptr = elem;
-
         this.recvq.enqueue(new_sf);
-
         Fiber.yield();
-
         return true;
+    }
+
+    /***************************************************************************
+
+        Return closing status
+
+        Return:
+            true if channel is closed, otherwise false
+
+    ***************************************************************************/
+
+    public @property bool isClosed ()
+    {
+        return this.queue.isClosed;
     }
 
     /***************************************************************************
@@ -193,9 +208,7 @@ public class Channel (T)
         while (true)
         {
             if (this.recvq.tryDequeue(sf))
-            {
                 sf.fiber.call();
-            }
             else
                 break;
         }
@@ -203,20 +216,34 @@ public class Channel (T)
         while (true)
         {
             if (this.sendq.tryDequeue(sf))
-            {
                 sf.fiber.call();
-            }
             else
                 break;
         }
     }
 }
 
+unittest
+{
+    Channel!int channel = new Channel!int(10);
+
+    foreach (int idx; 0 .. 10)
+        channel.send(idx);
+
+    int res;
+    int expect = 0;
+    foreach (int idx; 0 .. 10)
+    {
+        channel.receive(&res);
+        assert(res == expect++);
+    }
+}
+
 // multi-thread data type is int
 unittest
 {
-    Channel!int in_channel = new Channel!int();
-    Channel!int out_channel = new Channel!int();
+    Channel!int in_channel = new Channel!int(5);
+    Channel!int out_channel = new Channel!int(5);
 
     new Thread({
         int x;
@@ -233,8 +260,8 @@ unittest
 // multi-thread data type is string
 unittest
 {
-    Channel!string in_channel = new Channel!string();
-    Channel!string out_channel = new Channel!string();
+    Channel!string in_channel = new Channel!string(5);
+    Channel!string out_channel = new Channel!string(5);
 
     new Thread({
         string name;
@@ -252,69 +279,59 @@ unittest
 //
 unittest
 {
-    Channel!int in_channel = new Channel!int();
+    Channel!int channel = new Channel!int(5);
 
-    new Thread({
-        in_channel.send(3);
-    }).start();
-
-    in_channel.close();
     int res;
-    assert(!in_channel.receive(&res));
+    channel.send(1);
+    assert(channel.receive(&res));
+
+    channel.send(3);
+    channel.close();
+    assert(!channel.receive(&res));
 }
 
 // multi fiber, single thread data type is int
 unittest
 {
-    Channel!int in_channel = new Channel!int();
-    Channel!int out_channel = new Channel!int();
+    Channel!int in_channel = new Channel!int(5);
+    Channel!int out_channel = new Channel!int(5);
 
-    void sender ()
+    auto fiber1 = new Fiber(
     {
-        foreach (int idx; 0..10)
-        {
-            in_channel.send(idx);
-            Fiber.yield();
-        }
-    }
-
-    void receiver ()
-    {
-        int expect = 0;
+        int res;
         while (true)
         {
-            int res;
             in_channel.receive(&res);
-            assert(res == expect++);
-            Fiber.yield();
+            out_channel.send(res*res);
         }
-    }
+    });
+    fiber1.call();
 
-    auto f1 = new Fiber(&sender);
-    auto f2 = new Fiber(&receiver);
-
-    foreach (i; 0..5)
+    auto fiber2 = new Fiber(
     {
-        f1.call();
-        f2.call();
-
-        f2.call();
-        f1.call();
-    }
+        int res;
+        foreach (int idx; 1 .. 10)
+        {
+            in_channel.send(idx);
+            out_channel.receive(&res);
+            assert(res == idx*idx);
+        }
+    });
+    fiber2.call();
 }
 
 //
 unittest
 {
-    Channel!int in_channel = new Channel!int();
+    Channel!int channel = new Channel!int(5);
 
     auto fiber = new Fiber(
     {
+        int res;
         int expect = 1;
         while (true)
         {
-            int res;
-            in_channel.receive(&res);
+            channel.receive(&res);
             assert(res == expect++);
         }
     });
@@ -323,25 +340,24 @@ unittest
     auto thread = new Thread(
     {
         foreach (int idx; 1 .. 10)
-        {
-            in_channel.send(idx);
-        }
-        in_channel.close();
+            channel.send(idx);
+        channel.close();
     });
     thread.start();
 }
 
+//
 unittest
 {
-    Channel!int in_channel = new Channel!int();
+    Channel!int channel = new Channel!int(5);
 
     auto fiber = new Fiber(
     {
         foreach (int idx; 1 .. 10)
         {
-            in_channel.send(idx);
+            channel.send(idx);
         }
-        in_channel.close();
+        channel.close();
     });
     fiber.call();
 
@@ -351,7 +367,7 @@ unittest
         while (true)
         {
             int res;
-            in_channel.receive(&res);
+            channel.receive(&res);
             assert(res == expect++);
         }
     });
