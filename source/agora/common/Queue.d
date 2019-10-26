@@ -191,6 +191,8 @@ public class NonBlockingQueue (T) : Queue!T
     private shared(QueueNode!T) head;
     private shared(QueueNode!T) tail;
 
+    private shared(size_t) qcount;
+
     private shared(bool) closed;
 
     /// Ctor
@@ -199,6 +201,7 @@ public class NonBlockingQueue (T) : Queue!T
         shared n = new QueueNode!T();
         this.head = this.tail = n;
         this.closed = false;
+        this.qcount = 0;
     }
 
     /***************************************************************************
@@ -228,7 +231,10 @@ public class NonBlockingQueue (T) : Queue!T
                 if (next is null)
                 {
                     if (cas(&tail.next, next, node))
+                    {
+                        atomicOp!"+="(this.qcount, 1);
                         break;
+                    }
                 }
                 else
                     cas(&this.tail, tail, next);
@@ -293,6 +299,7 @@ public class NonBlockingQueue (T) : Queue!T
                 if (cas(&this.head, head, next))
                 {
                     value = cast(T)next.value;
+                    atomicOp!"-="(this.qcount, 1);
                     return true;
                 }
             }
@@ -315,6 +322,12 @@ public class NonBlockingQueue (T) : Queue!T
             if (cas(&this.closed, false, true))
                 break;
         }
+    }
+
+    public @property size_t count ()
+    {
+        auto count = this.qcount;
+        return count;
     }
 }
 
