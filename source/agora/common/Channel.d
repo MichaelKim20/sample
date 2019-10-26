@@ -96,15 +96,24 @@ public class Channel (T)
         Fiber fiber = Fiber.getThis();
         if (fiber is null)
         {
-            this.queue.enqueue(elem);
-            return true;
+            bool res;
+            bool waiting = true;
+            auto sender = new Fiber({
+                res = this.send(elem);
+                waiting = false;
+            });
+            sender.call();
+            while (waiting)
+                Thread.sleep(dur!("msecs")(5));
+            return res;
         }
 
         SudoFiber!T sf;
         if (this.recvq.tryDequeue(sf))
         {
             *(sf.elem_ptr) = elem;
-            sf.fiber.call();
+            if (sf.fiber !is null)
+                sf.fiber.call();
             return true;
         }
 
@@ -137,23 +146,25 @@ public class Channel (T)
         Fiber fiber = Fiber.getThis();
         if (fiber is null)
         {
-            *elem = this.queue.dequeue();
-            return true;
-        }
+            bool res;
+            bool waiting = true;
+            auto receiver = new Fiber({
+                res = this.receive(elem);
+                waiting = false;
+            });
 
-        T value;
-        if (this.queue.tryDequeue(value))
-        {
-            *elem = value;
-            Fiber.yield();
-            return true;
+            receiver.call();
+            while (waiting)
+                Thread.sleep(dur!("msecs")(5));
+            return res;
         }
 
         SudoFiber!T sf;
         if (this.sendq.tryDequeue(sf))
         {
             *(elem) = sf.elem;
-            sf.fiber.call();
+            if (sf.fiber !is null)
+                sf.fiber.call();
             return true;
         }
 
@@ -162,7 +173,9 @@ public class Channel (T)
         new_sf.elem_ptr = elem;
 
         this.recvq.enqueue(new_sf);
+
         Fiber.yield();
+
         return true;
     }
 
@@ -202,16 +215,13 @@ public class Channel (T)
 // multi-thread data type is int
 unittest
 {
-    import core.thread;
-
     Channel!int in_channel = new Channel!int();
     Channel!int out_channel = new Channel!int();
 
     new Thread({
         int x;
         in_channel.receive(&x);
-        int y = x * x * x;
-        out_channel.send(y);
+        out_channel.send(x * x * x);
     }).start();
 
     in_channel.send(3);
@@ -223,8 +233,6 @@ unittest
 // multi-thread data type is string
 unittest
 {
-    import core.thread;
-
     Channel!string in_channel = new Channel!string();
     Channel!string out_channel = new Channel!string();
 
@@ -241,18 +249,17 @@ unittest
     assert(res == "Hi Tom");
 }
 
-// data type is string
+//
 unittest
 {
     Channel!int in_channel = new Channel!int();
 
-    int res;
-    in_channel.send(3);
-    in_channel.receive(&res);
-    assert(res == 3);
+    new Thread({
+        in_channel.send(3);
+    }).start();
 
-    in_channel.send(5);
     in_channel.close();
+    int res;
     assert(!in_channel.receive(&res));
 }
 
@@ -296,34 +303,57 @@ unittest
     }
 }
 
+//
 unittest
 {
-    import core.thread;
-
     Channel!int in_channel = new Channel!int();
 
-    new Thread({
-        foreach (int idx; 0..10)
-        {
-            in_channel.send(idx);
-        }
-    }).start();
-
-    void receiver ()
+    auto fiber = new Fiber(
     {
-        int expect = 0;
+        int expect = 1;
         while (true)
         {
             int res;
             in_channel.receive(&res);
             assert(res == expect++);
-            Fiber.yield();
         }
-    }
-    auto f2 = new Fiber(&receiver);
+    });
+    fiber.call();
 
-    foreach (i; 0..10)
+    auto thread = new Thread(
     {
-        f2.call();
-    }
+        foreach (int idx; 1 .. 10)
+        {
+            in_channel.send(idx);
+        }
+        in_channel.close();
+    });
+    thread.start();
+}
+
+unittest
+{
+    Channel!int in_channel = new Channel!int();
+
+    auto fiber = new Fiber(
+    {
+        foreach (int idx; 1 .. 10)
+        {
+            in_channel.send(idx);
+        }
+        in_channel.close();
+    });
+    fiber.call();
+
+    auto thread = new Thread(
+    {
+        int expect = 1;
+        while (true)
+        {
+            int res;
+            in_channel.receive(&res);
+            assert(res == expect++);
+        }
+    });
+    thread.start();
 }
