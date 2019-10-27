@@ -12,10 +12,13 @@ module agora.common.Channel;
         MIT License. See LICENSE for details.
 
 *******************************************************************************/
-
 import agora.common.Queue;
 
+import core.sync.mutex;
 import core.thread;
+
+import std.container : DList;
+import std.range;
 
 ///
 private struct SudoFiber (T)
@@ -38,32 +41,31 @@ private struct SudoFiber (T)
 
 public class Channel (T)
 {
-    ///
+    /// closed
+    private bool closed;
+
+    /// lock
+    private Mutex mutex;
+
+    /// size of queue
     private size_t qsize;
-    ///
-    private NonBlockingQueue!T queue;
+
+    /// queue of data
+    private DList!T queue;
 
     /// collection of send waiters
-    private NonBlockingQueue!(SudoFiber!(T)) sendq;
+    private DList!(SudoFiber!(T)) sendq;
 
     /// collection of recv waiters
-    private NonBlockingQueue!(SudoFiber!(T)) recvq;
+    private DList!(SudoFiber!(T)) recvq;
+
 
     /// Ctor
     public this (size_t qsize = 0)
     {
+        this.closed = false;
+        this.mutex = new Mutex;
         this.qsize = qsize;
-        this.queue = new NonBlockingQueue!T;
-        this.sendq = new NonBlockingQueue!(SudoFiber!T);
-        this.recvq = new NonBlockingQueue!(SudoFiber!T);
-    }
-
-    ///
-    public ~this ()
-    {
-        this.queue.close();
-        this.sendq.close();
-        this.recvq.close();
     }
 
     /***************************************************************************
@@ -72,6 +74,9 @@ public class Channel (T)
         First, check the fiber that is waiting for reception.
         If there are no targets there, add fiber and data to the sending queue.
 
+        Params:
+            elem = value to send
+
         Return:
             true if the sending is successful, otherwise false
 
@@ -79,37 +84,53 @@ public class Channel (T)
 
     public bool send (T elem)
     {
-        if (isClosed())
-            return false;
+        this.mutex.lock_nothrow();
 
-        Fiber fiber = Fiber.getThis();
-        if (fiber is null)
+        if (this.closed)
         {
-            bool res;
-            bool is_waiting = true;
-
-            new Fiber({
-                res = this.send(elem);
-                is_waiting = false;
-            }).call();
-
-            while (is_waiting)
-                Thread.sleep(dur!("msecs")(1));
-            return res;
+            this.mutex.unlock_nothrow();
+            return false;
         }
 
-        SudoFiber!T sf;
-        if (this.recvq.tryDequeue(sf))
+        if (this.recvq[].walkLength > 0)
         {
+            SudoFiber!T sf = this.recvq.front;
+            this.recvq.removeFront();
+
+            this.mutex.unlock_nothrow();
+
             *(sf.elem_ptr) = elem;
             if (sf.fiber !is null)
                 sf.fiber.call();
             return true;
         }
 
-        if (this.queue.count < this.qsize)
+        if (this.queue[].walkLength < this.qsize)
         {
-            this.queue.enqueue(elem);
+            this.queue.insertBack(elem);
+            this.mutex.unlock_nothrow();
+            return true;
+        }
+
+        Fiber fiber = Fiber.getThis();
+        if (fiber is null)
+        {
+            bool is_waiting = true;
+            auto f = new Fiber({
+                is_waiting = false;
+            });
+
+            SudoFiber!T new_sf;
+            new_sf.fiber = f;
+            new_sf.elem_ptr = null;
+            new_sf.elem = elem;
+            this.sendq.insertBack(new_sf);
+
+            this.mutex.unlock_nothrow();
+
+            while (is_waiting)
+                Thread.sleep(dur!("msecs")(1));
+
             return true;
         }
 
@@ -117,15 +138,21 @@ public class Channel (T)
         new_sf.fiber = fiber;
         new_sf.elem_ptr = null;
         new_sf.elem = elem;
+        this.sendq.insertBack(new_sf);
 
-        this.sendq.enqueue(new_sf);
+        this.mutex.unlock_nothrow();
+
         Fiber.yield();
+
         return true;
     }
 
     /***************************************************************************
 
         Write the data received in `elem`
+
+        Params:
+            elem = value to receive
 
         Return:
             true if the receiving is successful, otherwise false
@@ -134,49 +161,71 @@ public class Channel (T)
 
     public bool receive (T* elem)
     {
-        if (isClosed())
+        this.mutex.lock_nothrow();
+
+        if (this.closed)
         {
             (*elem) = T.init;
+            this.mutex.unlock_nothrow();
+
             return false;
+        }
+
+        if (this.sendq[].walkLength > 0)
+        {
+            SudoFiber!T sf = this.sendq.front;
+            this.sendq.removeFront();
+
+            this.mutex.unlock_nothrow();
+
+            *(elem) = sf.elem;
+
+            if (sf.fiber !is null)
+                sf.fiber.call();
+
+            return true;
+        }
+
+        if (this.queue[].walkLength > 0)
+        {
+            *(elem) = this.queue.front;
+            this.queue.removeFront();
+
+            this.mutex.unlock_nothrow();
+
+            return true;
         }
 
         Fiber fiber = Fiber.getThis();
         if (fiber is null)
         {
-            bool res;
             bool is_waiting = true;
-
-            new Fiber({
-                res = this.receive(elem);
+            auto f = new Fiber({
                 is_waiting = false;
-            }).call();
+            });
+
+            SudoFiber!T new_sf;
+            new_sf.fiber = f;
+            new_sf.elem_ptr = elem;
+            this.recvq.insertBack(new_sf);
+
+            this.mutex.unlock_nothrow();
 
             while (is_waiting)
                 Thread.sleep(dur!("msecs")(1));
-            return res;
-        }
 
-        SudoFiber!T sf;
-        if (this.sendq.tryDequeue(sf))
-        {
-            *(elem) = sf.elem;
-            if (sf.fiber !is null)
-                sf.fiber.call();
-            return true;
-        }
-
-        T val;
-        if (this.queue.tryDequeue(val))
-        {
-            *(elem) = val;
             return true;
         }
 
         SudoFiber!T new_sf;
         new_sf.fiber = fiber;
         new_sf.elem_ptr = elem;
-        this.recvq.enqueue(new_sf);
+        this.recvq.insertBack(new_sf);
+
+        this.mutex.unlock_nothrow();
+
         Fiber.yield();
+
         return true;
     }
 
@@ -191,7 +240,12 @@ public class Channel (T)
 
     public @property bool isClosed ()
     {
-        return this.queue.isClosed;
+        bool closed;
+        synchronized (this.mutex)
+        {
+            closed = this.closed;
+        }
+        return closed;
     }
 
     /***************************************************************************
@@ -202,12 +256,29 @@ public class Channel (T)
 
     public void close ()
     {
-        this.queue.close();
-
         SudoFiber!T sf;
+        bool res;
+
+        synchronized (this.mutex)
+        {
+            this.closed = true;
+        }
+
         while (true)
         {
-            if (this.recvq.tryDequeue(sf))
+            synchronized (this.mutex)
+            {
+                if (this.recvq[].walkLength > 0)
+                {
+                    sf = this.recvq.front;
+                    this.recvq.removeFront();
+                    res = true;
+                }
+                else
+                    res = false;
+            }
+
+            if (res)
                 sf.fiber.call();
             else
                 break;
@@ -215,7 +286,19 @@ public class Channel (T)
 
         while (true)
         {
-            if (this.sendq.tryDequeue(sf))
+            synchronized (this.mutex)
+            {
+                if (this.sendq[].walkLength > 0)
+                {
+                    sf = this.sendq.front;
+                    this.sendq.removeFront();
+                    res = true;
+                }
+                else
+                    res = false;
+            }
+
+            if (res)
                 sf.fiber.call();
             else
                 break;
