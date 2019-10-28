@@ -1,13 +1,6 @@
 /*******************************************************************************
 
     This file contains the implementation of channels.
-    A channel is a communication class using which fiber can communicate
-    with each other.
-    Technically, a channel is a data transfer pipe where data can be passed
-    into or read from.
-    Hence one fiber can send data into a channel, while other fiber can read
-    that data from the same channel
-
     Copyright:
         Copyright (c) 2019 BOS Platform Foundation Korea
         All rights reserved.
@@ -19,14 +12,137 @@
 
 module agora.common.Channel;
 
+import agora.common.Queue;
+
 import std.container;
 import std.range;
 
 import core.sync.mutex;
 import core.thread;
 
-/// ditto
-public class Channel (T)
+/*******************************************************************************
+
+    A interface of channel
+
+*******************************************************************************/
+
+public interface Channel (T)
+{
+    /// Send data `elem`.
+    public bool send (T elem);
+
+    /// Write the data received in `elem`
+    public bool receive (T* elem);
+}
+
+/*******************************************************************************
+
+    This channel use `NonBlockingQueue`. This is not uses `Lock`
+
+*******************************************************************************/
+
+public class NonBlockingChannel (T) : Channel!T
+{
+    /// Non blocking queue
+    private NonBlockingQueue!T queue;
+
+    /// Ctor
+    public this (size_t qsize = 0)
+    {
+        this.queue = new NonBlockingQueue!T;
+    }
+
+    /***************************************************************************
+
+        Send data `elem`.
+
+        Params:
+            elem = value to send
+
+        Return:
+            true if the sending is successful, otherwise false
+
+    ***************************************************************************/
+
+    public bool send (T elem)
+    {
+        this.queue.enqueue(elem);
+        return true;
+    }
+
+    /***************************************************************************
+
+        Write the data received in `elem`
+
+        Params:
+            elem = value to receive
+
+        Return:
+            true if the receiving is successful, otherwise false
+
+    ***************************************************************************/
+
+    public bool receive (T* elem)
+    {
+        *elem = this.queue.dequeue();
+        return true;
+    }
+}
+
+/// test of `NonBlockingChannel`, data type is `int`
+unittest
+{
+    NonBlockingChannel!int in_channel = new NonBlockingChannel!int();
+    NonBlockingChannel!int out_channel = new NonBlockingChannel!int();
+
+    new Thread({
+        int x;
+        in_channel.receive(&x);
+        int y = x * x * x;
+        out_channel.send(y);
+    }).start();
+
+    in_channel.send(3);
+    int res;
+    out_channel.receive(&res);
+    assert(res == 27);
+}
+
+/// test of `NonBlockingChannel`, data type is `string`
+unittest
+{
+    NonBlockingChannel!string in_channel = new NonBlockingChannel!string();
+    NonBlockingChannel!string out_channel = new NonBlockingChannel!string();
+
+    new Thread({
+        string name;
+        in_channel.receive(&name);
+        string greeting = "Hi " ~ name;
+        out_channel.send(greeting);
+    }).start();
+
+    in_channel.send("Tom");
+    string res;
+    out_channel.receive(&res);
+    assert(res == "Hi Tom");
+}
+
+/*******************************************************************************
+
+    This channel has queues that senders and receivers can wait for.
+    With these queues, a single thread alone can exchange data with each other.
+
+    This channel use `NonBlockingQueue`. This is not uses `Lock`
+    A channel is a communication class using which fiber can communicate
+    with each other.
+    Technically, a channel is a data transfer pipe where data can be passed
+    into or read from.
+    Hence one fiber can send data into a channel, while other fiber can read
+    that data from the same channel
+
+*******************************************************************************/
+
+public class WaitableChannel (T) : Channel!T
 {
     /// closed
     private bool closed;
@@ -298,9 +414,56 @@ private struct SudoFiber (T)
     public StopWaitDg swdg;
 }
 
+/// In single thread
+/// Call 'receive' first. Then the `Fiber` will  register in the queue.
+/// Next, when the send is called, the `Fiber` in the queue receives the data.
+/// Without a queue, it's impossible on a single thread.
 unittest
 {
-    Channel!int channel = new Channel!int(10);
+    WaitableChannel!int channel = new WaitableChannel!int(10);
+
+    new Fiber(
+    {
+        int res;
+        channel.receive(&res);
+        assert(res == 42);
+    }).call();
+
+    channel.send(42);
+}
+
+/// If the size of the data buffer is zero,
+/// It blocks after calling the send.
+/// To solve the blocking, there is a way to generate
+/// and register Fiber from the Thread.
+unittest
+{
+    WaitableChannel!int channel = new WaitableChannel!int(0);
+
+    //channel.send(42); // => to be block
+    //int res;
+    //channel.receive(&res);
+}
+
+/// If the size of the data buffer is zero,
+/// If you call it using a fiber, it won't block.
+unittest
+{
+    WaitableChannel!int channel = new WaitableChannel!int(0);
+
+    new Fiber(
+    {
+        channel.send(42);
+    }).call();
+
+    int res;
+    channel.receive(&res);
+    assert(res == 42);
+}
+
+unittest
+{
+    WaitableChannel!int channel = new WaitableChannel!int(10);
 
     foreach (int idx; 0 .. 10)
         channel.send(idx);
@@ -317,8 +480,8 @@ unittest
 // multi-thread data type is int
 unittest
 {
-    Channel!int in_channel = new Channel!int(5);
-    Channel!int out_channel = new Channel!int(5);
+    WaitableChannel!int in_channel = new WaitableChannel!int(5);
+    WaitableChannel!int out_channel = new WaitableChannel!int(5);
 
     new Thread({
         int x;
@@ -335,8 +498,8 @@ unittest
 // multi-thread data type is string
 unittest
 {
-    Channel!string in_channel = new Channel!string(5);
-    Channel!string out_channel = new Channel!string(5);
+    WaitableChannel!string in_channel = new WaitableChannel!string(5);
+    WaitableChannel!string out_channel = new WaitableChannel!string(5);
 
     new Thread({
         string name;
@@ -354,7 +517,7 @@ unittest
 //
 unittest
 {
-    Channel!int channel = new Channel!int(5);
+    WaitableChannel!int channel = new WaitableChannel!int(5);
 
     int res;
     channel.send(1);
@@ -368,8 +531,8 @@ unittest
 // multi fiber, single thread data type is int
 unittest
 {
-    Channel!int in_channel = new Channel!int(5);
-    Channel!int out_channel = new Channel!int(5);
+    WaitableChannel!int in_channel = new WaitableChannel!int(5);
+    WaitableChannel!int out_channel = new WaitableChannel!int(5);
 
     auto fiber1 = new Fiber(
     {
@@ -398,7 +561,7 @@ unittest
 //
 unittest
 {
-    Channel!int channel = new Channel!int(5);
+    WaitableChannel!int channel = new WaitableChannel!int(5);
 
     auto fiber = new Fiber(
     {
@@ -424,7 +587,7 @@ unittest
 //
 unittest
 {
-    Channel!int channel = new Channel!int(5);
+    WaitableChannel!int channel = new WaitableChannel!int(5);
 
     auto fiber = new Fiber(
     {
@@ -449,13 +612,14 @@ unittest
     thread.start();
 }
 
+// Benchmark of NonBlockingChannel and WaitableChannel
 unittest
 {
     ///  Start `writers` amount of threads to write into a queue.
     ///  Start `readers` amount of threads to read from the queue.
     ///  Each writer counts from 0 to `count` and sends each number into the queue.
     ///  The sum is checked at the end.
-    void test_run(uint writers, uint readers, uint count)
+    void test_run(alias C)(uint writers, uint readers, uint count)
     {
         import std.bigint : BigInt;
         import std.range;
@@ -466,7 +630,7 @@ unittest
 
         BigInt sum = 0;
 
-        Channel!int channel = new Channel!int(writers);
+        C!int channel = new C!int(writers);
 
         auto write_worker = ()
         {
@@ -527,5 +691,20 @@ unittest
     enum writers = 10;
     enum count = 10_000;
 
-    test_run(writers, readers, count);
+    void f0 ()
+    {
+        test_run!(NonBlockingChannel!int)(writers, readers, count);
+    }
+
+    void f1 ()
+    {
+        test_run!(WaitableChannel!int)(writers, readers, count);
+    }
+
+    import std.datetime.stopwatch : benchmark;
+    auto r = benchmark!(f0, f1)(3);
+
+    import std.stdio;
+    writeln(r[0]);
+    writeln(r[1]);
 }
