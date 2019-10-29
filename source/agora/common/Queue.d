@@ -19,8 +19,6 @@ module agora.common.Queue;
 import core.atomic;
 import core.sync.mutex;
 
-public alias WaitDg = void delegate();
-
 /*******************************************************************************
 
     Interface for all queues.
@@ -49,7 +47,7 @@ public interface Queue (T)
 
     ***************************************************************************/
 
-    public T dequeue (WaitDg dg = null);
+    public T dequeue ();
 
     /***************************************************************************
 
@@ -132,7 +130,7 @@ public class BlockingQueue (T) : Queue!T
 
     ***************************************************************************/
 
-    public T dequeue (WaitDg dg = null)
+    public T dequeue ()
     {
         this.head_lock.lock();
         scope (exit) this.head_lock.unlock();
@@ -146,8 +144,6 @@ public class BlockingQueue (T) : Queue!T
                 this.head = second;
                 return head.value;
             }
-            if (dg !is null)
-                dg();
         }
     }
 
@@ -191,17 +187,11 @@ public class NonBlockingQueue (T) : Queue!T
     private shared(QueueNode!T) head;
     private shared(QueueNode!T) tail;
 
-    private shared(size_t) qcount;
-
-    private shared(bool) closed;
-
     /// Ctor
     public this ()
     {
         shared n = new QueueNode!T();
         this.head = this.tail = n;
-        this.closed = false;
-        this.qcount = 0;
     }
 
     /***************************************************************************
@@ -215,9 +205,6 @@ public class NonBlockingQueue (T) : Queue!T
 
     public void enqueue (T value)
     {
-        if (isClosed)
-            return;
-
         shared node = new QueueNode!T();
         node.value = cast(shared(T))value;
 
@@ -231,10 +218,7 @@ public class NonBlockingQueue (T) : Queue!T
                 if (next is null)
                 {
                     if (cas(&tail.next, next, node))
-                    {
-                        atomicOp!"+="(this.qcount, 1);
                         break;
-                    }
                 }
                 else
                     cas(&this.tail, tail, next);
@@ -251,17 +235,10 @@ public class NonBlockingQueue (T) : Queue!T
 
     ***************************************************************************/
 
-    public T dequeue (WaitDg dg = null)
+    public T dequeue ()
     {
-        if (isClosed)
-            return T.init;
-
         T value = void;
-        while (!this.tryDequeue(value))
-        {
-            if (dg !is null)
-                dg();
-        }
+        while (!this.tryDequeue(value)) {}
         return value;
     }
 
@@ -299,35 +276,11 @@ public class NonBlockingQueue (T) : Queue!T
                 if (cas(&this.head, head, next))
                 {
                     value = cast(T)next.value;
-                    atomicOp!"-="(this.qcount, 1);
                     return true;
                 }
             }
         }
         return false;
-    }
-
-    public @property bool isClosed ()
-    {
-        return this.closed;
-    }
-
-    public void close ()
-    {
-        while (true)
-        {
-            if (this.closed is true)
-                break;
-
-            if (cas(&this.closed, false, true))
-                break;
-        }
-    }
-
-    public @property size_t count ()
-    {
-        auto count = this.qcount;
-        return count;
     }
 }
 
@@ -418,15 +371,12 @@ unittest
         test_run!(NonBlockingQueue!long)  (writers, readers, count);
     }
 
-    f0();
-    f1();
-/*
     import std.datetime.stopwatch : benchmark;
     auto r = benchmark!(f0, f1)(3);
-    import std.stdio;
-    writeln(r[0]);
-    writeln(r[1]);
-*/
+
+    //import std.stdio;
+    //writeln(r[0]);
+    //writeln(r[1]);
 }
 
 unittest

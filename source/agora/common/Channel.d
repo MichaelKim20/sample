@@ -1,9 +1,6 @@
-module agora.common.Channel;
-
 /*******************************************************************************
 
     This file contains the implementation of channels.
-
     Copyright:
         Copyright (c) 2019 BOS Platform Foundation Korea
         All rights reserved.
@@ -12,24 +9,130 @@ module agora.common.Channel;
         MIT License. See LICENSE for details.
 
 *******************************************************************************/
+
+module agora.common.Channel;
+
 import agora.common.Queue;
+
+import std.container;
+import std.range;
 
 import core.sync.mutex;
 import core.thread;
 
-import std.container : DList;
-import std.range;
+/*******************************************************************************
 
-///
-private struct SudoFiber (T)
+    A interface of channel
+
+*******************************************************************************/
+
+public interface Channel (T)
 {
-    public Fiber fiber;
-    public T* elem_ptr;
-    public T  elem;
+    /// Send data `elem`.
+    public bool send (T elem);
+
+    /// Write the data received in `elem`
+    public bool receive (T* elem);
 }
 
 /*******************************************************************************
 
+    This channel use `NonBlockingQueue`. This is not uses `Lock`
+
+*******************************************************************************/
+
+public class NonBlockingChannel (T) : Channel!T
+{
+    /// Non blocking queue
+    private NonBlockingQueue!T queue;
+
+    /// Ctor
+    public this ()
+    {
+        this.queue = new NonBlockingQueue!T;
+    }
+
+    /***************************************************************************
+
+        Send data `elem`.
+
+        Params:
+            elem = value to send
+
+        Return:
+            true if the sending is successful, otherwise false
+
+    ***************************************************************************/
+
+    public bool send (T elem)
+    {
+        this.queue.enqueue(elem);
+        return true;
+    }
+
+    /***************************************************************************
+
+        Write the data received in `elem`
+
+        Params:
+            elem = value to receive
+
+        Return:
+            true if the receiving is successful, otherwise false
+
+    ***************************************************************************/
+
+    public bool receive (T* elem)
+    {
+        *elem = this.queue.dequeue();
+        return true;
+    }
+}
+
+/// test of `NonBlockingChannel`, data type is `int`
+unittest
+{
+    NonBlockingChannel!int in_channel = new NonBlockingChannel!int();
+    NonBlockingChannel!int out_channel = new NonBlockingChannel!int();
+
+    new Thread({
+        int x;
+        in_channel.receive(&x);
+        int y = x * x * x;
+        out_channel.send(y);
+    }).start();
+
+    in_channel.send(3);
+    int res;
+    out_channel.receive(&res);
+    assert(res == 27);
+}
+
+/// test of `NonBlockingChannel`, data type is `string`
+unittest
+{
+    NonBlockingChannel!string in_channel = new NonBlockingChannel!string();
+    NonBlockingChannel!string out_channel = new NonBlockingChannel!string();
+
+    new Thread({
+        string name;
+        in_channel.receive(&name);
+        string greeting = "Hi " ~ name;
+        out_channel.send(greeting);
+    }).start();
+
+    in_channel.send("Tom");
+    string res;
+    out_channel.receive(&res);
+    assert(res == "Hi Tom");
+}
+
+/*******************************************************************************
+
+    This channel has queues that senders and receivers can wait for.
+    With these queues, a single thread alone can exchange data with each other.
+
+    This channel use `NonBlockingQueue`. This is not uses `Lock`
     A channel is a communication class using which fiber can communicate
     with each other.
     Technically, a channel is a data transfer pipe where data can be passed
@@ -39,7 +142,7 @@ private struct SudoFiber (T)
 
 *******************************************************************************/
 
-public class Channel (T)
+public class WaitableChannel (T) : Channel!T
 {
     /// closed
     private bool closed;
@@ -71,8 +174,9 @@ public class Channel (T)
     /***************************************************************************
 
         Send data `elem`.
-        First, check the fiber that is waiting for reception.
-        If there are no targets there, add fiber and data to the sending queue.
+        First, check the receiving waiter that is in the `recvq`.
+        If there are no targets there, add data to the `queue`.
+        If queue is full then stored waiter(fiber) to the `sendq`.
 
         Params:
             elem = value to send
@@ -84,11 +188,11 @@ public class Channel (T)
 
     public bool send (T elem)
     {
-        this.mutex.lock_nothrow();
+        this.mutex.lock();
 
         if (this.closed)
         {
-            this.mutex.unlock_nothrow();
+            this.mutex.unlock();
             return false;
         }
 
@@ -97,52 +201,56 @@ public class Channel (T)
             SudoFiber!T sf = this.recvq.front;
             this.recvq.removeFront();
 
-            this.mutex.unlock_nothrow();
+            this.mutex.unlock();
 
             *(sf.elem_ptr) = elem;
             if (sf.fiber !is null)
                 sf.fiber.call();
+            else if (sf.swdg !is null)
+                sf.swdg();
+
             return true;
         }
 
         if (this.queue[].walkLength < this.qsize)
         {
             this.queue.insertBack(elem);
-            this.mutex.unlock_nothrow();
+            this.mutex.unlock();
             return true;
         }
 
         Fiber fiber = Fiber.getThis();
-        if (fiber is null)
+        if (fiber !is null)
         {
-            bool is_waiting = true;
-            auto f = new Fiber({
-                is_waiting = false;
-            });
-
             SudoFiber!T new_sf;
-            new_sf.fiber = f;
+            new_sf.fiber = fiber;
             new_sf.elem_ptr = null;
             new_sf.elem = elem;
             this.sendq.insertBack(new_sf);
 
-            this.mutex.unlock_nothrow();
+            this.mutex.unlock();
+
+            Fiber.yield();
+        }
+        else
+        {
+            shared(bool) is_waiting = true;
+            void stopWait() {
+                is_waiting = false;
+            }
+            SudoFiber!T new_sf;
+            new_sf.fiber = null;
+            new_sf.elem_ptr = null;
+            new_sf.elem = elem;
+            new_sf.swdg = &stopWait;
+
+            this.sendq.insertBack(new_sf);
+
+            this.mutex.unlock();
 
             while (is_waiting)
                 Thread.sleep(dur!("msecs")(1));
-
-            return true;
         }
-
-        SudoFiber!T new_sf;
-        new_sf.fiber = fiber;
-        new_sf.elem_ptr = null;
-        new_sf.elem = elem;
-        this.sendq.insertBack(new_sf);
-
-        this.mutex.unlock_nothrow();
-
-        Fiber.yield();
 
         return true;
     }
@@ -161,12 +269,12 @@ public class Channel (T)
 
     public bool receive (T* elem)
     {
-        this.mutex.lock_nothrow();
+        this.mutex.lock();
 
         if (this.closed)
         {
             (*elem) = T.init;
-            this.mutex.unlock_nothrow();
+            this.mutex.unlock();
 
             return false;
         }
@@ -176,12 +284,14 @@ public class Channel (T)
             SudoFiber!T sf = this.sendq.front;
             this.sendq.removeFront();
 
-            this.mutex.unlock_nothrow();
+            this.mutex.unlock();
 
             *(elem) = sf.elem;
 
             if (sf.fiber !is null)
                 sf.fiber.call();
+            else if (sf.swdg !is null)
+                sf.swdg();
 
             return true;
         }
@@ -191,40 +301,42 @@ public class Channel (T)
             *(elem) = this.queue.front;
             this.queue.removeFront();
 
-            this.mutex.unlock_nothrow();
+            this.mutex.unlock();
 
             return true;
         }
 
         Fiber fiber = Fiber.getThis();
-        if (fiber is null)
+        if (fiber !is null)
         {
-            bool is_waiting = true;
-            auto f = new Fiber({
-                is_waiting = false;
-            });
-
             SudoFiber!T new_sf;
-            new_sf.fiber = f;
+            new_sf.fiber = fiber;
             new_sf.elem_ptr = elem;
+
             this.recvq.insertBack(new_sf);
 
-            this.mutex.unlock_nothrow();
+            this.mutex.unlock();
+
+            Fiber.yield();
+        }
+        else
+        {
+            shared(bool) is_waiting = true;
+            void stopWait() {
+                is_waiting = false;
+            }
+            SudoFiber!T new_sf;
+            new_sf.fiber = fiber;
+            new_sf.elem_ptr = elem;
+            new_sf.swdg = &stopWait;
+
+            this.recvq.insertBack(new_sf);
+
+            this.mutex.unlock();
 
             while (is_waiting)
                 Thread.sleep(dur!("msecs")(1));
-
-            return true;
         }
-
-        SudoFiber!T new_sf;
-        new_sf.fiber = fiber;
-        new_sf.elem_ptr = elem;
-        this.recvq.insertBack(new_sf);
-
-        this.mutex.unlock_nothrow();
-
-        Fiber.yield();
 
         return true;
     }
@@ -240,11 +352,10 @@ public class Channel (T)
 
     public @property bool isClosed ()
     {
-        bool closed;
-        synchronized (this.mutex)
-        {
-            closed = this.closed;
-        }
+        this.mutex.lock();
+        scope (exit) this.mutex.unlock();
+
+        bool closed = this.closed;
         return closed;
     }
 
@@ -259,56 +370,101 @@ public class Channel (T)
         SudoFiber!T sf;
         bool res;
 
-        synchronized (this.mutex)
+        this.mutex.lock();
+        scope (exit) this.mutex.unlock();
+
+        this.closed = true;
+
+        while (true)
         {
-            this.closed = true;
+            if (this.recvq[].walkLength == 0)
+                break;
+
+            sf = this.recvq.front;
+            this.recvq.removeFront();
+            if (sf.fiber !is null)
+                sf.fiber.call();
+            else if (sf.swdg !is null)
+                sf.swdg();
         }
 
         while (true)
         {
-            synchronized (this.mutex)
-            {
-                if (this.recvq[].walkLength > 0)
-                {
-                    sf = this.recvq.front;
-                    this.recvq.removeFront();
-                    res = true;
-                }
-                else
-                    res = false;
-            }
-
-            if (res)
-                sf.fiber.call();
-            else
+            if (this.sendq[].walkLength == 0)
                 break;
-        }
 
-        while (true)
-        {
-            synchronized (this.mutex)
-            {
-                if (this.sendq[].walkLength > 0)
-                {
-                    sf = this.sendq.front;
-                    this.sendq.removeFront();
-                    res = true;
-                }
-                else
-                    res = false;
-            }
-
-            if (res)
+            sf = this.sendq.front;
+            this.sendq.removeFront();
+            if (sf.fiber !is null)
                 sf.fiber.call();
-            else
-                break;
+            else if (sf.swdg !is null)
+                sf.swdg();
         }
     }
 }
 
+private alias StopWaitDg = void delegate ();
+
+///
+private struct SudoFiber (T)
+{
+    public Fiber fiber;
+    public T* elem_ptr;
+    public T  elem;
+    public StopWaitDg swdg;
+}
+
+/// In single thread
+/// Call 'receive' first. Then the `Fiber` will  register in the queue.
+/// Next, when the send is called, the `Fiber` in the queue receives the data.
+/// Without a queue, it's impossible on a single thread.
 unittest
 {
-    Channel!int channel = new Channel!int(10);
+    WaitableChannel!int channel = new WaitableChannel!int(10);
+
+    new Fiber(
+    {
+        int res;
+        channel.receive(&res);
+        assert(res == 42);
+    }).call();
+
+    channel.send(42);
+}
+
+/// If the size of the data buffer is zero,
+/// It blocks after calling the send.
+/// To solve the blocking, there is a way to generate
+/// and register Fiber from the Thread.
+unittest
+{
+    WaitableChannel!int channel = new WaitableChannel!int(0);
+
+    //channel.send(42); // => to be block
+    //int res;
+    //channel.receive(&res);
+}
+
+/// If the size of the data buffer is zero,
+/// If you call it using a fiber, it won't block.
+unittest
+{
+    WaitableChannel!int channel = new WaitableChannel!int(0);
+
+    new Fiber(
+    {
+        channel.send(42);
+    }).call();
+
+    int res;
+    channel.receive(&res);
+    assert(res == 42);
+}
+
+/// The size of the data buffer is 10
+unittest
+{
+    WaitableChannel!int channel = new WaitableChannel!int(10);
 
     foreach (int idx; 0 .. 10)
         channel.send(idx);
@@ -322,11 +478,11 @@ unittest
     }
 }
 
-// multi-thread data type is int
+/// multi-thread data type is int
 unittest
 {
-    Channel!int in_channel = new Channel!int(5);
-    Channel!int out_channel = new Channel!int(5);
+    WaitableChannel!int in_channel = new WaitableChannel!int(5);
+    WaitableChannel!int out_channel = new WaitableChannel!int(5);
 
     new Thread({
         int x;
@@ -340,11 +496,11 @@ unittest
     assert(res == 27);
 }
 
-// multi-thread data type is string
+/// Multi-thread data type is string
 unittest
 {
-    Channel!string in_channel = new Channel!string(5);
-    Channel!string out_channel = new Channel!string(5);
+    WaitableChannel!string in_channel = new WaitableChannel!string(5);
+    WaitableChannel!string out_channel = new WaitableChannel!string(5);
 
     new Thread({
         string name;
@@ -359,10 +515,10 @@ unittest
     assert(res == "Hi Tom");
 }
 
-//
+/// When the channel is closed, `receive` returns false;
 unittest
 {
-    Channel!int channel = new Channel!int(5);
+    WaitableChannel!int channel = new WaitableChannel!int(5);
 
     int res;
     channel.send(1);
@@ -373,11 +529,11 @@ unittest
     assert(!channel.receive(&res));
 }
 
-// multi fiber, single thread data type is int
+/// Multi fiber, single thread data type is int
 unittest
 {
-    Channel!int in_channel = new Channel!int(5);
-    Channel!int out_channel = new Channel!int(5);
+    WaitableChannel!int in_channel = new WaitableChannel!int(5);
+    WaitableChannel!int out_channel = new WaitableChannel!int(5);
 
     auto fiber1 = new Fiber(
     {
@@ -403,10 +559,10 @@ unittest
     fiber2.call();
 }
 
-//
+/// Send data `Thread` to `Fiber`
 unittest
 {
-    Channel!int channel = new Channel!int(5);
+    WaitableChannel!int channel = new WaitableChannel!int(5);
 
     auto fiber = new Fiber(
     {
@@ -429,10 +585,10 @@ unittest
     thread.start();
 }
 
-//
+/// Send data `Fiber` to `Thread`
 unittest
 {
-    Channel!int channel = new Channel!int(5);
+    WaitableChannel!int channel = new WaitableChannel!int(5);
 
     auto fiber = new Fiber(
     {
@@ -455,4 +611,124 @@ unittest
         }
     });
     thread.start();
+}
+
+// Benchmark of NonBlockingChannel and WaitableChannel
+unittest
+{
+    ///  Start `writers` amount of threads to write into a queue.
+    ///  Start `readers` amount of threads to read from the queue.
+    ///  Each writer counts from 0 to `count` and sends each number into the queue.
+    ///  The sum is checked at the end.
+    void test_run(Channel!int channel, uint writers, uint readers, uint count)
+    {
+        import std.bigint : BigInt;
+        import std.range;
+
+        import core.thread;
+
+        immutable(BigInt) correct_sum = BigInt(count) * BigInt(count-1) / 2 * writers;
+
+        BigInt sum = 0;
+
+        auto write_worker = ()
+        {
+            Thread[] ts;
+            foreach (i; 0 .. writers)
+            {
+                auto t = new Thread(
+                    {
+                        foreach (n; 1 .. count)
+                            channel.send(n);
+                    }
+                );
+                t.start();
+                ts ~= t;
+            }
+
+            foreach (t; ts)
+                t.join();
+        };
+
+        auto read_worker = ()
+        {
+            Thread[] ts;
+            foreach (i; 0 .. readers)
+            {
+                auto t = new Thread(
+                    {
+                        BigInt s = 0;
+                        foreach (_; 1 .. count)
+                        {
+                            int n;
+                            channel.receive(&n);
+                            s += n;
+                        }
+                        synchronized { sum += s; }
+                    }
+                );
+                t.start();
+                ts ~= t;
+            }
+
+            foreach (t; ts)
+                t.join();
+        };
+
+        auto w = new Thread(write_worker);
+        auto r = new Thread(read_worker);
+
+        w.start();
+        r.start();
+
+        w.join();
+        r.join();
+
+        assert(sum == correct_sum);
+    }
+    enum readers = 10;
+    enum writers = 10;
+    enum count = 1_000;
+
+    void f0 ()
+    {
+        NonBlockingChannel!int channel = new NonBlockingChannel!int();
+        test_run(channel, writers, readers, count);
+    }
+
+    void f1 ()
+    {
+        WaitableChannel!int channel = new WaitableChannel!int(1*writers);
+        test_run(channel, writers, readers, count);
+    }
+
+    void f2 ()
+    {
+        WaitableChannel!int channel = new WaitableChannel!int(5*writers);
+        test_run(channel, writers, readers, count);
+    }
+
+    void f3 ()
+    {
+        WaitableChannel!int channel = new WaitableChannel!int(10*writers);
+        test_run(channel, writers, readers, count);
+    }
+
+    import std.datetime.stopwatch : benchmark;
+    auto r = benchmark!(f0, f1, f2, f3)(3);
+
+/*
+    import std.stdio;
+    writefln("NonBlockingChannel  %s", r[0]);
+    writefln("WaitableChannel  10 %s", r[1]);
+    writefln("WaitableChannel  50 %s", r[2]);
+    writefln("WaitableChannel 100 %s", r[3]);
+*/
+
+/* result
+NonBlockingChannel  1 sec, 166 ms, and 167 μs
+WaitableChannel  10 6 secs, 556 ms, 871 μs, and 4 hnsecs
+WaitableChannel  50 2 secs, 650 ms, 478 μs, and 1 hnsec
+WaitableChannel 100 2 secs, 310 ms, 340 μs, and 2 hnsecs
+*/
 }
