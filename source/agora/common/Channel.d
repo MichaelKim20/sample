@@ -47,7 +47,7 @@ public class NonBlockingChannel (T) : Channel!T
     private NonBlockingQueue!T queue;
 
     /// Ctor
-    public this (size_t qsize = 0)
+    public this ()
     {
         this.queue = new NonBlockingQueue!T;
     }
@@ -461,6 +461,7 @@ unittest
     assert(res == 42);
 }
 
+/// The size of the data buffer is 10
 unittest
 {
     WaitableChannel!int channel = new WaitableChannel!int(10);
@@ -477,7 +478,7 @@ unittest
     }
 }
 
-/// multi-thread data type is int
+/// Multi-thread data type is int
 unittest
 {
     WaitableChannel!int in_channel = new WaitableChannel!int(5);
@@ -619,7 +620,7 @@ unittest
     ///  Start `readers` amount of threads to read from the queue.
     ///  Each writer counts from 0 to `count` and sends each number into the queue.
     ///  The sum is checked at the end.
-    void test_run(alias C)(uint writers, uint readers, uint count)
+    void test_run(Channel!int channel, uint writers, uint readers, uint count)
     {
         import std.bigint : BigInt;
         import std.range;
@@ -629,8 +630,6 @@ unittest
         immutable(BigInt) correct_sum = BigInt(count) * BigInt(count-1) / 2 * writers;
 
         BigInt sum = 0;
-
-        C!int channel = new C!int(writers);
 
         auto write_worker = ()
         {
@@ -689,22 +688,45 @@ unittest
     }
     enum readers = 10;
     enum writers = 10;
-    enum count = 10_000;
+    enum count = 1000;
 
     void f0 ()
     {
-        test_run!(NonBlockingChannel!int)(writers, readers, count);
+        NonBlockingChannel!int channel = new NonBlockingChannel!int();
+        test_run(channel, writers, readers, count);
     }
 
     void f1 ()
     {
-        test_run!(WaitableChannel!int)(writers, readers, count);
+        WaitableChannel!int channel = new WaitableChannel!int(10);
+        test_run(channel, writers, readers, count);
+    }
+
+    void f2 ()
+    {
+        WaitableChannel!int channel = new WaitableChannel!int(20);
+        test_run(channel, writers, readers, count);
+    }
+
+    void f3 ()
+    {
+        WaitableChannel!int channel = new WaitableChannel!int(50);
+        test_run(channel, writers, readers, count);
     }
 
     import std.datetime.stopwatch : benchmark;
-    auto r = benchmark!(f0, f1)(3);
-
+    auto r = benchmark!(f0, f1, f2, f3)(3);
+/*
     import std.stdio;
     writeln(r[0]);
     writeln(r[1]);
+    writeln(r[2]);
+    writeln(r[3]);
+*/
+/* result
+70 ms, 408 μs, and 3 hnsecs
+696 ms, 99 μs, and 8 hnsecs
+498 ms, 76 μs, and 4 hnsecs
+303 ms, 522 μs, and 5 hnsecs
+*/
 }
