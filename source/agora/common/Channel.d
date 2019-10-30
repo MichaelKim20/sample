@@ -477,7 +477,7 @@ unittest
     }
 }
 
-// multi-thread data type is int
+/// multi-thread data type is int
 unittest
 {
     WaitableChannel!int in_channel = new WaitableChannel!int(5);
@@ -495,7 +495,7 @@ unittest
     assert(res == 27);
 }
 
-// multi-thread data type is string
+/// Multi-thread data type is string
 unittest
 {
     WaitableChannel!string in_channel = new WaitableChannel!string(5);
@@ -514,7 +514,7 @@ unittest
     assert(res == "Hi Tom");
 }
 
-//
+/// When the channel is closed, `receive` returns false;
 unittest
 {
     WaitableChannel!int channel = new WaitableChannel!int(5);
@@ -528,7 +528,7 @@ unittest
     assert(!channel.receive(&res));
 }
 
-// multi fiber, single thread data type is int
+/// Multi fiber, single thread data type is int
 unittest
 {
     WaitableChannel!int in_channel = new WaitableChannel!int(5);
@@ -558,7 +558,7 @@ unittest
     fiber2.call();
 }
 
-//
+/// Send data `Thread` to `Fiber`
 unittest
 {
     WaitableChannel!int channel = new WaitableChannel!int(5);
@@ -584,7 +584,7 @@ unittest
     thread.start();
 }
 
-//
+/// Send data `Fiber` to `Thread`
 unittest
 {
     WaitableChannel!int channel = new WaitableChannel!int(5);

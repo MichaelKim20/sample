@@ -371,15 +371,12 @@ unittest
         test_run!(NonBlockingQueue!long)  (writers, readers, count);
     }
 
-    f0();
-    f1();
-/*
     import std.datetime.stopwatch : benchmark;
     auto r = benchmark!(f0, f1)(3);
-    import std.stdio;
-    writeln(r[0]);
-    writeln(r[1]);
-*/
+
+    //import std.stdio;
+    //writeln(r[0]);
+    //writeln(r[1]);
 }
 
 unittest
